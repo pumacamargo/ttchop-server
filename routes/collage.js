@@ -149,14 +149,29 @@ OUTPUT FORMAT — respond with this JSON structure:
     console.log(`[${jobId}] Public URL: ${publicUrl}`);
 
     // 7. Update Firestore
-    await upsertRender({ taskId: renderId, status: 'done', videoUrl: publicUrl });
+    await upsertRender({
+      taskId: renderId,
+      status: 'done',
+      videoUrl: publicUrl,
+      type: 'collage',
+      productId: product?.id || null,
+      productName: product?.name || null,
+      userId: req.body.userId || null,
+    });
 
     res.json({ status: 'done', videoUrl: publicUrl, renderId, jobId });
 
   } catch (err) {
     console.error(`[${jobId}] ERROR:`, err.message);
     try {
-      await upsertRender({ taskId: renderId, status: 'failed', errorMessage: err.message });
+      await upsertRender({
+        taskId: renderId,
+        status: 'failed',
+        errorMessage: err.message,
+        type: 'collage',
+        productId: product?.id || null,
+        productName: product?.name || null,
+      });
     } catch (_) {}
     res.status(500).json({ error: err.message, jobId });
   } finally {
