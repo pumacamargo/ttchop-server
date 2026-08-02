@@ -41,18 +41,19 @@ Respond with JSON: { "prompt": "...", "notes": "..." }`,
 // POST /ai/generate
 // Body: { prompt, imageUrl, model: 'veo3'|'seedance', aspectRatio?, duration?, callBackUrl? }
 router.post('/generate', async (req, res) => {
-  const { prompt, imageUrl, model = 'seedance', aspectRatio, duration, callBackUrl } = req.body;
+  const { prompt, imageUrls, imageUrl, model = 'seedance', aspectRatio, callBackUrl } = req.body;
+  const images = imageUrls || (imageUrl ? [imageUrl] : null);
 
-  if (!prompt || !imageUrl) {
-    return res.status(400).json({ error: 'prompt e imageUrl son requeridos' });
+  if (!prompt || !images?.length) {
+    return res.status(400).json({ error: 'prompt e imageUrls son requeridos' });
   }
 
   try {
     let result;
     if (model === 'veo3') {
-      result = await generateVeo3({ prompt, imageUrl, aspectRatio, duration });
+      result = await generateVeo3({ prompt, imageUrls: images, aspectRatio, callBackUrl });
     } else {
-      result = await generateSeedance({ prompt, imageUrl, callBackUrl, aspectRatio });
+      result = await generateSeedance({ prompt, imageUrls: images, callBackUrl, aspectRatio });
     }
     res.json(result);
   } catch (err) {

@@ -21,15 +21,20 @@ function headers() {
   };
 }
 
-export async function generateVeo3({ prompt, imageUrl, aspectRatio = '9:16', duration = 8 }) {
+export async function generateVeo3({ prompt, imageUrls, aspectRatio = '9:16', callBackUrl }) {
+  const serverUrl = process.env.SERVER_URL || 'http://localhost:3002';
   const res = await fetch(`${BASE_URL}/veo/generate`, {
     method: 'POST',
     headers: headers(),
     body: JSON.stringify({
       prompt: PRODUCT_FIDELITY_PREFIX + prompt,
-      imageUrl,
-      aspectRatio,
-      duration,
+      imageUrls: Array.isArray(imageUrls) ? imageUrls : [imageUrls],
+      model: 'veo3_fast',
+      callBackUrl: callBackUrl || `${serverUrl}/ai/callback`,
+      aspect_ratio: aspectRatio,
+      seeds: Math.floor(Math.random() * 90000) + 10000,
+      enableTranslation: true,
+      generationType: 'REFERENCE_2_VIDEO',
     }),
   });
 
@@ -42,8 +47,9 @@ export async function generateVeo3({ prompt, imageUrl, aspectRatio = '9:16', dur
   return data;
 }
 
-export async function generateSeedance({ prompt, imageUrl, callBackUrl, aspectRatio = '9:16' }) {
+export async function generateSeedance({ prompt, imageUrls, callBackUrl, aspectRatio = '9:16' }) {
   const serverUrl = process.env.SERVER_URL || 'http://localhost:3002';
+  const images = Array.isArray(imageUrls) ? imageUrls : [imageUrls];
   const res = await fetch(`${BASE_URL}/jobs/createTask`, {
     method: 'POST',
     headers: headers(),
@@ -52,7 +58,7 @@ export async function generateSeedance({ prompt, imageUrl, callBackUrl, aspectRa
       callBackUrl: callBackUrl || `${serverUrl}/ai/callback`,
       input: {
         prompt: PRODUCT_FIDELITY_PREFIX + prompt,
-        image: imageUrl,
+        image: images[0],
         aspect_ratio: aspectRatio,
       },
     }),
