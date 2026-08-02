@@ -5,7 +5,7 @@ import path from 'path';
 import { randomBytes } from 'crypto';
 import { callLLM, callLLMJson } from '../pipeline/llm.js';
 import { textToSpeech } from '../pipeline/elevenlabs.js';
-import { uploadFile } from '../pipeline/ftp.js';
+import { uploadToStorage } from '../pipeline/storage.js';
 import { upsertRender } from '../pipeline/firestore.js';
 
 const router = Router();
@@ -142,10 +142,10 @@ OUTPUT FORMAT — respond with this JSON structure:
 
     console.log(`[${jobId}] Collage built: ${pyOutput.final_duration_seconds}s`);
 
-    // 6. Upload to FTP
-    console.log(`[${jobId}] Uploading via FTP...`);
+    // 6. Upload to Firebase Storage
+    console.log(`[${jobId}] Uploading to Firebase Storage...`);
     const filename = `${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19)}_${jobId}.mp4`;
-    const publicUrl = await uploadFile(outputPath, filename);
+    const publicUrl = await uploadToStorage(outputPath, filename);
     console.log(`[${jobId}] Public URL: ${publicUrl}`);
 
     // 7. Update Firestore
