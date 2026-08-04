@@ -122,9 +122,10 @@ PART 1 — HOOK (first ~3 seconds of output):
 
 PART 2 — BODY (remaining ${audioDurationSeconds - 3}s of output):
 - Use clips in a coherent story order that logically demonstrates the product
-- Speed: 1.0 to 2.0 — prefer 1.5x for dynamic feel; use 1.0x when the clip shows something important that needs time
-- Each clip output segment: 2-4 seconds; NEVER cut a clip before the important content finishes showing
-- If a clip is long and shows multiple things, it is OK to use only part of it (trim to the best moment)
+- Each clip output segment: 2 to 3 seconds MAX — never longer
+- If the important content of a clip is longer than 3 seconds: speed it up (increase speed) until its output fits in 3s, OR trim to a different key moment (reframe) that fits in 3s
+- Speed: 1.0 to 2.5 — use whatever speed is needed to keep each segment under 3s while showing the important content
+- Prefer showing the most impactful moment of each clip, not the full clip
 - role: "body"
 
 OUTPUT FORMAT:
