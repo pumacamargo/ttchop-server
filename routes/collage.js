@@ -91,7 +91,7 @@ router.post('/create', async (req, res) => {
     const recipe = await callLLMJson({
       system: `You are an expert video editor generating an ffmpeg edit recipe from clip metadata and an audio track.
 Respond ONLY with valid JSON, no markdown, no explanations.`,
-      user: `Generate an ffmpeg collage recipe.
+      user: `Generate an ffmpeg collage recipe with a 2-part structure.
 
 PRODUCT: ${JSON.stringify(product || {})}
 
@@ -106,9 +106,28 @@ LANGUAGE: ${language || 'spanish'}
 DIALOGUE (strip emotional tags in brackets):
 ${dialogue}
 
-AUDIO DURATION: ${audioDurationSeconds}s — This is the EXACT total video duration. The sum of all clip durations MUST equal exactly ${audioDurationSeconds}s.
+AUDIO DURATION: ${audioDurationSeconds}s — EXACT total output duration. The sum of all clip output durations MUST equal exactly ${audioDurationSeconds}s.
 
-OUTPUT FORMAT — respond with this JSON structure:
+== REQUIRED 2-PART STRUCTURE ==
+
+PART 1 — HOOK (first ~3 seconds of output):
+- This MUST be a montage of 3 to 5 different clips — NOT a single clip playing for 3 seconds
+- Each hook clip segment: 0.5s to 1.0s of output (very short, punchy cuts)
+- Pick the single most impressive moment from each of the 3-5 different clips (any part, not just the start)
+- Speed: 2.0x to 3.0x per clip — fast and energetic
+- Together they sum to exactly 3.0s output
+- Goal: like a movie trailer — the viewer sees 3-5 quick flashes of the best moments and wants to keep watching
+- Think: which 3-5 moments, if seen in 3 seconds, would make someone stop scrolling?
+- role: "hook"
+
+PART 2 — BODY (remaining ${audioDurationSeconds - 3}s of output):
+- Use clips in a coherent story order that logically demonstrates the product
+- Speed: 1.0 to 2.0 — prefer 1.5x for dynamic feel; use 1.0x when the clip shows something important that needs time
+- Each clip output segment: 2-4 seconds; NEVER cut a clip before the important content finishes showing
+- If a clip is long and shows multiple things, it is OK to use only part of it (trim to the best moment)
+- role: "body"
+
+OUTPUT FORMAT:
 {
   "ffmpegRecipe": {
     "meta": { "outputPath": "${outputPath}", "width": 1080, "height": 1920 },
@@ -116,12 +135,12 @@ OUTPUT FORMAT — respond with this JSON structure:
     "clips": [
       {
         "clipId": "...",
-        "role": "hook|body|cta",
+        "role": "hook|body",
         "firebaseUrl": "...",
         "src": "",
         "trimStart": 0.0,
         "trimEnd": 3.0,
-        "speed": 1.0
+        "speed": 2.0
       }
     ]
   }
