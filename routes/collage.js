@@ -122,10 +122,11 @@ PART 1 — HOOK (first ~3 seconds of output):
 
 PART 2 — BODY (remaining ${audioDurationSeconds - 3}s of output):
 - Use clips in a coherent story order that logically demonstrates the product
-- Each clip output segment: 2 to 3 seconds MAX — never longer
-- If the important content of a clip is longer than 3 seconds: speed it up (increase speed) until its output fits in 3s, OR trim to a different key moment (reframe) that fits in 3s
-- Speed: 1.0 to 2.5 — use whatever speed is needed to keep each segment under 3s while showing the important content
-- Prefer showing the most impactful moment of each clip, not the full clip
+- ⚠️ STRICT RULE: each clip output segment MUST be between 2.0s and 3.0s — NEVER more than 3 seconds
+- Output duration per clip = (trimEnd - trimStart) / speed — this MUST be ≤ 3.0
+- If a moment is important but lasts more than 3s of output: INCREASE speed until it fits, e.g. 6s of footage at speed=2.0 = 3s output ✅
+- Use enough clips so the TOTAL output = ${audioDurationSeconds - 3}s for the body section
+- Prefer showing the most impactful 2-3s moment of each clip
 - role: "body"
 
 OUTPUT FORMAT:
@@ -148,12 +149,27 @@ OUTPUT FORMAT:
 }`,
     });
 
-    // 4. Validate clip sum vs audio duration — extend if LLM fell short
+    // 4. Validate recipe rules and auto-correct
     const clips = recipe.ffmpegRecipe.clips;
     const clipOutSecs = (c) => (c.trimEnd - c.trimStart) / (c.speed || 1);
+    const MAX_BODY_SECS = 3.0;
+
+    // 4a. Enforce max 3s per body clip — trim trimEnd if too long
+    let enforced = 0;
+    for (const c of clips) {
+      if (c.role === 'body') {
+        const out = clipOutSecs(c);
+        if (out > MAX_BODY_SECS) {
+          c.trimEnd = c.trimStart + MAX_BODY_SECS * (c.speed || 1);
+          enforced++;
+        }
+      }
+    }
+    if (enforced > 0) console.log(`[${jobId}] Enforced max 3s on ${enforced} body clip(s)`);
+
+    // 4b. Fill gap if clips sum < audio duration
     let totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
     const gap = audioDurationSeconds - totalOut;
-
     if (gap > 0.5) {
       console.log(`[${jobId}] Gap: clips=${totalOut.toFixed(1)}s audio=${audioDurationSeconds}s — extending ${gap.toFixed(1)}s`);
       const bodyClips = clips.filter(c => c.role === 'body');
@@ -161,16 +177,18 @@ OUTPUT FORMAT:
       let remaining = gap;
       let ext = 0;
       while (remaining > 0.3) {
-        const segOut = Math.min(remaining, clipOutSecs(refClip));
+        const segOut = Math.min(remaining, MAX_BODY_SECS);
         const segSrc = segOut * (refClip.speed || 1);
         clips.push({ ...refClip, clipId: `${refClip.clipId}_ext${++ext}`, trimEnd: refClip.trimStart + segSrc });
         remaining -= segOut;
       }
       totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
-      console.log(`[${jobId}] After fix: clips=${totalOut.toFixed(1)}s`);
+      console.log(`[${jobId}] After gap fix: clips=${totalOut.toFixed(1)}s`);
     }
 
-    // 4b. Write recipe JSON
+    console.log(`[${jobId}] Recipe: ${clips.length} clips, total=${totalOut.toFixed(1)}s, audio=${audioDurationSeconds}s`);
+
+    // 4c. Write recipe JSON
     writeFileSync(recipePath, JSON.stringify(recipe));
 
     // 5. Run collage_builder.py
