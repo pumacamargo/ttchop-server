@@ -122,11 +122,11 @@ PART 1 — HOOK (first ~3 seconds of output):
 
 PART 2 — BODY (remaining ${audioDurationSeconds - 3}s of output):
 - Use clips in a coherent story order that logically demonstrates the product
-- ⚠️ STRICT RULE: each clip output segment MUST be between 2.0s and 3.0s — NEVER more than 3 seconds
-- Output duration per clip = (trimEnd - trimStart) / speed — this MUST be ≤ 3.0
-- If a moment is important but lasts more than 3s of output: INCREASE speed until it fits, e.g. 6s of footage at speed=2.0 = 3s output ✅
-- Use enough clips so the TOTAL output = ${audioDurationSeconds - 3}s for the body section
-- Prefer showing the most impactful 2-3s moment of each clip
+- ⚠️ STRICT RULES — both must be respected:
+  1. Speed: MINIMUM 1.5x for every body clip — never use speed 1.0. Range: 1.5 to 2.5
+  2. Output duration per clip = (trimEnd - trimStart) / speed — MUST be between 2.0s and 3.0s
+  Example: 4.5s footage at speed=1.5 → 3.0s output ✅ | 6s footage at speed=2.0 → 3.0s output ✅
+- Use enough clips so the TOTAL body output = ${audioDurationSeconds - 3}s
 - role: "body"
 
 OUTPUT FORMAT:
@@ -154,10 +154,17 @@ OUTPUT FORMAT:
     const clipOutSecs = (c) => (c.trimEnd - c.trimStart) / (c.speed || 1);
     const MAX_BODY_SECS = 3.0;
 
-    // 4a. Enforce max 3s per body clip — trim trimEnd if too long
+    const MIN_SPEED = 1.5;
+    // 4a. Enforce rules per body clip: min speed 1.5x, max 3s output
     let enforced = 0;
     for (const c of clips) {
       if (c.role === 'body') {
+        // Enforce minimum speed
+        if ((c.speed || 1) < MIN_SPEED) {
+          c.speed = MIN_SPEED;
+          enforced++;
+        }
+        // Enforce max 3s output
         const out = clipOutSecs(c);
         if (out > MAX_BODY_SECS) {
           c.trimEnd = c.trimStart + MAX_BODY_SECS * (c.speed || 1);
@@ -165,7 +172,7 @@ OUTPUT FORMAT:
         }
       }
     }
-    if (enforced > 0) console.log(`[${jobId}] Enforced max 3s on ${enforced} body clip(s)`);
+    if (enforced > 0) console.log(`[${jobId}] Enforced rules on ${enforced} body clip(s)`);
 
     // 4b. Fill gap if clips sum < audio duration — cycle random body clips, no consecutive repeats
     let totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
