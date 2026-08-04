@@ -123,9 +123,9 @@ PART 1 — HOOK (first ~3 seconds of output):
 PART 2 — BODY (remaining ${audioDurationSeconds - 3}s of output):
 - Use clips in a coherent story order that logically demonstrates the product
 - ⚠️ STRICT RULES — both must be respected:
-  1. Speed: MINIMUM 1.5x for every body clip — never use speed 1.0. Range: 1.5 to 2.5
+  1. Speed: MINIMUM 1.5x for every body clip — never use speed 1.0. Range: 1.5 to 4.0
   2. Output duration per clip = (trimEnd - trimStart) / speed — MUST be between 2.0s and 3.0s
-  Example: 4.5s footage at speed=1.5 → 3.0s output ✅ | 6s footage at speed=2.0 → 3.0s output ✅
+  Example: 4.5s footage at speed=1.5 → 3.0s output ✅ | 12s footage at speed=4.0 → 3.0s output ✅
 - Use enough clips so the TOTAL body output = ${audioDurationSeconds - 3}s
 - role: "body"
 
