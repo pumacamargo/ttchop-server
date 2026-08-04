@@ -148,7 +148,29 @@ OUTPUT FORMAT:
 }`,
     });
 
-    // 4. Write recipe JSON
+    // 4. Validate clip sum vs audio duration — extend if LLM fell short
+    const clips = recipe.ffmpegRecipe.clips;
+    const clipOutSecs = (c) => (c.trimEnd - c.trimStart) / (c.speed || 1);
+    let totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
+    const gap = audioDurationSeconds - totalOut;
+
+    if (gap > 0.5) {
+      console.log(`[${jobId}] Gap: clips=${totalOut.toFixed(1)}s audio=${audioDurationSeconds}s — extending ${gap.toFixed(1)}s`);
+      const bodyClips = clips.filter(c => c.role === 'body');
+      const refClip = bodyClips[bodyClips.length - 1] || clips[clips.length - 1];
+      let remaining = gap;
+      let ext = 0;
+      while (remaining > 0.3) {
+        const segOut = Math.min(remaining, clipOutSecs(refClip));
+        const segSrc = segOut * (refClip.speed || 1);
+        clips.push({ ...refClip, clipId: `${refClip.clipId}_ext${++ext}`, trimEnd: refClip.trimStart + segSrc });
+        remaining -= segOut;
+      }
+      totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
+      console.log(`[${jobId}] After fix: clips=${totalOut.toFixed(1)}s`);
+    }
+
+    // 4b. Write recipe JSON
     writeFileSync(recipePath, JSON.stringify(recipe));
 
     // 5. Run collage_builder.py
