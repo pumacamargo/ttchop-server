@@ -167,23 +167,36 @@ OUTPUT FORMAT:
     }
     if (enforced > 0) console.log(`[${jobId}] Enforced max 3s on ${enforced} body clip(s)`);
 
-    // 4b. Fill gap if clips sum < audio duration
+    // 4b. Fill gap if clips sum < audio duration — cycle random body clips, no consecutive repeats
     let totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
     const gap = audioDurationSeconds - totalOut;
     if (gap > 0.5) {
-      console.log(`[${jobId}] Gap: clips=${totalOut.toFixed(1)}s audio=${audioDurationSeconds}s — extending ${gap.toFixed(1)}s`);
+      console.log(`[${jobId}] Gap: clips=${totalOut.toFixed(1)}s audio=${audioDurationSeconds}s — filling ${gap.toFixed(1)}s`);
       const bodyClips = clips.filter(c => c.role === 'body');
-      const refClip = bodyClips[bodyClips.length - 1] || clips[clips.length - 1];
+      const pool = bodyClips.length > 0 ? bodyClips : clips;
+      // Shuffle pool
+      const shuffled = [...pool].sort(() => Math.random() - 0.5);
       let remaining = gap;
       let ext = 0;
+      let lastId = clips[clips.length - 1]?.clipId;
+      let poolIdx = 0;
       while (remaining > 0.3) {
+        // Pick next clip that's not the same as the last one
+        let pick = shuffled[poolIdx % shuffled.length];
+        if (pick.clipId === lastId && shuffled.length > 1) {
+          poolIdx++;
+          pick = shuffled[poolIdx % shuffled.length];
+        }
         const segOut = Math.min(remaining, MAX_BODY_SECS);
-        const segSrc = segOut * (refClip.speed || 1);
-        clips.push({ ...refClip, clipId: `${refClip.clipId}_ext${++ext}`, trimEnd: refClip.trimStart + segSrc });
+        const segSrc = segOut * (pick.speed || 1);
+        const newClip = { ...pick, clipId: `${pick.clipId}_ext${++ext}`, trimEnd: pick.trimStart + segSrc };
+        clips.push(newClip);
+        lastId = newClip.clipId;
+        poolIdx++;
         remaining -= segOut;
       }
       totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
-      console.log(`[${jobId}] After gap fix: clips=${totalOut.toFixed(1)}s`);
+      console.log(`[${jobId}] After gap fix: clips=${totalOut.toFixed(1)}s (+${ext} filler clips)`);
     }
 
     console.log(`[${jobId}] Recipe: ${clips.length} clips, total=${totalOut.toFixed(1)}s, audio=${audioDurationSeconds}s`);
