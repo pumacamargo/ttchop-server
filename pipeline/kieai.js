@@ -47,7 +47,7 @@ export async function generateVeo3({ prompt, imageUrls, aspectRatio = '9:16', ca
   return data;
 }
 
-export async function generateSeedance({ prompt, imageUrls, callBackUrl, aspectRatio = '9:16' }) {
+export async function generateSeedance({ prompt, imageUrls, callBackUrl, aspectRatio = '9:16', resolution = '480p', duration = 15, generateAudio = true }) {
   const serverUrl = process.env.SERVER_URL || 'http://localhost:3002';
   const images = Array.isArray(imageUrls) ? imageUrls : [imageUrls];
   const res = await fetch(`${BASE_URL}/jobs/createTask`, {
@@ -58,8 +58,11 @@ export async function generateSeedance({ prompt, imageUrls, callBackUrl, aspectR
       callBackUrl: callBackUrl || `${serverUrl}/ai/callback`,
       input: {
         prompt: PRODUCT_FIDELITY_PREFIX + prompt,
-        image: images[0],
+        reference_image_urls: images,
         aspect_ratio: aspectRatio,
+        resolution,
+        duration,
+        generate_audio: generateAudio,
       },
     }),
   });

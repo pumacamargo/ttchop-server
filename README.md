@@ -44,13 +44,25 @@ Los nodos de Gemini se quedan en n8n porque usan el nodo nativo:
 
 ## Flujos migrados
 
-### /collage/dialogue
+### /collage/dialogue → /collage/create (flujo de dos pasos)
+
+Siempre llamar primero a `/collage/dialogue` para obtener el script, revisarlo si es necesario, y luego pasarlo como `dialogue` a `/collage/create`. Nunca llamar a `/collage/create` sin el `dialogue` pre-generado.
+
 ```
 ttchop-webapp
     → POST /collage/dialogue { product, collageTemplate, language }
-    ← { dialogue: "..." }
-    → POST ElevenLabs /tts (en la webapp o en /collage/create)
+    ← { dialogue: "Script de voz generado por el LLM..." }
+
+    (opcional: revisar/editar el script antes de continuar)
+
+    → POST /collage/create { voiceId, dialogue, sessions, ... }
 ```
+
+**Voice IDs de ElevenLabs:**
+| Mercado | Voz | ID |
+|---------|-----|----|
+| 🇯🇵 JP | Announcer (masculino) | `gU0LNdkMOQCOrPrwtbee` |
+| 🇲🇽 MX | Jessica (femenino) | `cgSgspJ2msm6clMCkdW9` |
 
 ### /collage/create
 ```
@@ -64,6 +76,23 @@ ttchop-webapp
     → Firestore renders/{renderId} { status, videoUrl }
     ← { status: 'done', videoUrl, renderId }
 ```
+
+> ⚠️ **`sessions` debe incluir `downloadUrl` en cada video** — el LLM que genera el recipe de ffmpeg necesita la URL HTTPS real para descargar los clips. Pasar solo IDs hace que el LLM invente URLs `gs://` incorrectas.
+>
+> Formato correcto:
+> ```json
+> {
+>   "sessions": [
+>     {
+>       "id": "sess_abc123",
+>       "videos": [
+>         { "id": "vid_xxx", "downloadUrl": "https://firebasestorage.../vid_xxx.mp4?...", "duration": 12.4 },
+>         { "id": "vid_yyy", "downloadUrl": "https://firebasestorage.../vid_yyy.mp4?...", "duration": 8.1 }
+>       ]
+>     }
+>   ]
+> }
+> ```
 
 ### /ai/prompt
 ```
