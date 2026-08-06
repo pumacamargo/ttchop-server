@@ -7,6 +7,7 @@ import { callLLM, callLLMJson } from '../pipeline/llm.js';
 import { textToSpeech } from '../pipeline/elevenlabs.js';
 import { uploadToStorage } from '../pipeline/storage.js';
 import { upsertRender } from '../pipeline/firestore.js';
+import { enqueue } from '../pipeline/jobQueue.js';
 
 const router = Router();
 const SCRIPTS_DIR = new URL('../scripts', import.meta.url).pathname;
@@ -75,11 +76,10 @@ router.post('/create', async (req, res) => {
 
   console.log(`[${jobId}] Collage START | renderId: ${renderId}`);
 
-  // Respond immediately — pipeline runs in background
-  res.json({ status: 'pending', renderId, jobId });
-
-  try {
-    ensureTempDir();
+  // Respond immediately — pipeline runs in queue
+  const queuePos = enqueue(jobId, async () => {
+    try {
+      ensureTempDir();
 
     // 1. ElevenLabs TTS
     console.log(`[${jobId}] TTS...`);
@@ -264,23 +264,26 @@ OUTPUT FORMAT:
 
     console.log(`[${jobId}] DONE | videoUrl: ${publicUrl}`);
 
-  } catch (err) {
-    console.error(`[${jobId}] ERROR:`, err.message);
-    try {
-      await upsertRender({
-        taskId: renderId,
-        status: 'failed',
-        errorMessage: err.message,
-        type: 'collage',
-        productId: product?.id || null,
-        productName: product?.name || null,
-      });
-    } catch (_) {}
-  } finally {
-    for (const f of [audioPath, recipePath, outputPath]) {
-      if (f && existsSync(f)) unlinkSync(f);
+    } catch (err) {
+      console.error(`[${jobId}] ERROR:`, err.message);
+      try {
+        await upsertRender({
+          taskId: renderId,
+          status: 'failed',
+          errorMessage: err.message,
+          type: 'collage',
+          productId: product?.id || null,
+          productName: product?.name || null,
+        });
+      } catch (_) {}
+    } finally {
+      for (const f of [audioPath, recipePath, outputPath]) {
+        if (f && existsSync(f)) unlinkSync(f);
+      }
     }
-  }
+  });
+
+  res.json({ status: 'pending', renderId, jobId, queuePosition: queuePos });
 });
 
 export default router;

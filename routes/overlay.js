@@ -6,6 +6,7 @@ import path from 'path';
 import { randomBytes } from 'crypto';
 import { uploadToStorage } from '../pipeline/storage.js';
 import { upsertRender } from '../pipeline/firestore.js';
+import { enqueue } from '../pipeline/jobQueue.js';
 
 const router = Router();
 const TEMP_DIR = '/tmp/ttchop_overlay';
@@ -30,74 +31,74 @@ router.post('/create', async (req, res) => {
   const jobId = randomBytes(6).toString('hex');
   const outPath = path.join(TEMP_DIR, `overlay_${jobId}.mp4`);
 
-  // Respond immediately
-  res.json({ status: 'pending', renderId, jobId });
-
-  try {
-    if (!existsSync(TEMP_DIR)) {
-      const { execSync } = await import('child_process');
-      execSync(`mkdir -p ${TEMP_DIR}`);
-    }
-
-    const market = product.region === 'mx' ? 'mx' : 'jp';
-    console.log(`[${jobId}] Overlay START | renderId: ${renderId} | market: ${market}`);
-
-    const overlayRes = await fetch(`${OVERLAY_SERVER}/render-data`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        videoUrl,
-        product: {
-          name: product.name,
-          description: product.description,
-          price: null,
-          region: product.region,
-        },
-        template: 'default',
-        market,
-      }),
-      timeout: 600_000,
-    });
-
-    if (!overlayRes.ok) {
-      const err = await overlayRes.text();
-      throw new Error(`overlay-server error ${overlayRes.status}: ${err.slice(0, 200)}`);
-    }
-
-    // Stream response to local file
-    const fileStream = createWriteStream(outPath);
-    await pipeline(overlayRes.body, fileStream);
-    console.log(`[${jobId}] Overlay rendered — uploading...`);
-
-    const filename = `overlay_${jobId}.mp4`;
-    const publicUrl = await uploadToStorage(outPath, filename);
-    console.log(`[${jobId}] Uploaded: ${publicUrl}`);
-
-    await upsertRender({
-      taskId: renderId,
-      status: 'done',
-      videoUrl: publicUrl,
-      type: 'overlay',
-      productId: product?.id || null,
-      productName: product?.name || null,
-    });
-
-    console.log(`[${jobId}] DONE`);
-  } catch (err) {
-    console.error(`[${jobId}] ERROR:`, err.message);
+  const queuePos = enqueue(jobId, async () => {
     try {
+      if (!existsSync(TEMP_DIR)) {
+        const { execSync } = await import('child_process');
+        execSync(`mkdir -p ${TEMP_DIR}`);
+      }
+
+      const market = product.region === 'mx' ? 'mx' : 'jp';
+      console.log(`[${jobId}] Overlay START | renderId: ${renderId} | market: ${market}`);
+
+      const overlayRes = await fetch(`${OVERLAY_SERVER}/render-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoUrl,
+          product: {
+            name: product.name,
+            description: product.description,
+            price: null,
+            region: product.region,
+          },
+          template: 'default',
+          market,
+        }),
+        timeout: 600_000,
+      });
+
+      if (!overlayRes.ok) {
+        const err = await overlayRes.text();
+        throw new Error(`overlay-server error ${overlayRes.status}: ${err.slice(0, 200)}`);
+      }
+
+      const fileStream = createWriteStream(outPath);
+      await pipeline(overlayRes.body, fileStream);
+      console.log(`[${jobId}] Overlay rendered — uploading...`);
+
+      const filename = `overlay_${jobId}.mp4`;
+      const publicUrl = await uploadToStorage(outPath, filename);
+      console.log(`[${jobId}] Uploaded: ${publicUrl}`);
+
       await upsertRender({
         taskId: renderId,
-        status: 'failed',
-        errorMessage: err.message,
+        status: 'done',
+        videoUrl: publicUrl,
         type: 'overlay',
         productId: product?.id || null,
         productName: product?.name || null,
       });
-    } catch (_) {}
-  } finally {
-    if (existsSync(outPath)) unlinkSync(outPath);
-  }
+
+      console.log(`[${jobId}] DONE`);
+    } catch (err) {
+      console.error(`[${jobId}] ERROR:`, err.message);
+      try {
+        await upsertRender({
+          taskId: renderId,
+          status: 'failed',
+          errorMessage: err.message,
+          type: 'overlay',
+          productId: product?.id || null,
+          productName: product?.name || null,
+        });
+      } catch (_) {}
+    } finally {
+      if (existsSync(outPath)) unlinkSync(outPath);
+    }
+  });
+
+  res.json({ status: 'pending', renderId, jobId, queuePosition: queuePos });
 });
 
 export default router;
