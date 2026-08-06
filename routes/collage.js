@@ -1,6 +1,9 @@
 import { Router } from 'express';
-import { execSync } from 'child_process';
+import { execSync, exec } from 'child_process';
+import { promisify } from 'util';
 import { writeFileSync, unlinkSync, existsSync } from 'fs';
+
+const execAsync = promisify(exec);
 import path from 'path';
 import { randomBytes } from 'crypto';
 import { callLLM, callLLMJson } from '../pipeline/llm.js';
@@ -13,16 +16,16 @@ const router = Router();
 const SCRIPTS_DIR = new URL('../scripts', import.meta.url).pathname;
 const TEMP_DIR = '/tmp/ttchop_collage';
 
-function ensureTempDir() {
-  if (!existsSync(TEMP_DIR)) execSync(`mkdir -p ${TEMP_DIR}`);
+async function ensureTempDir() {
+  if (!existsSync(TEMP_DIR)) await execAsync(`mkdir -p ${TEMP_DIR}`);
 }
 
-function getAudioDuration(audioPath) {
-  const out = execSync(
+async function getAudioDuration(audioPath) {
+  const { stdout } = await execAsync(
     `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
     { timeout: 10000 }
-  ).toString().trim();
-  return parseFloat(out) || 0;
+  );
+  return parseFloat(stdout.trim()) || 0;
 }
 
 // POST /collage/dialogue
@@ -86,7 +89,7 @@ router.post('/create', async (req, res) => {
     await textToSpeech({ text: dialogue, voiceId, outputPath: audioPath });
 
     // 2. Audio duration
-    const audioDurationSeconds = clientAudioDuration || getAudioDuration(audioPath);
+    const audioDurationSeconds = clientAudioDuration || await getAudioDuration(audioPath);
     console.log(`[${jobId}] Audio duration: ${audioDurationSeconds}s`);
 
     // 3. LLM genera ffmpeg recipe
@@ -236,9 +239,9 @@ OUTPUT FORMAT:
 
     // 5. Run collage_builder.py
     console.log(`[${jobId}] Running collage_builder.py...`);
-    const pyResult = execSync(
+    const { stdout: pyResult } = await execAsync(
       `python3 ${SCRIPTS_DIR}/collage_builder.py "${recipePath}"`,
-      { timeout: 1_200_000, encoding: 'utf8' }
+      { timeout: 1_200_000 }
     );
     const pyOutput = JSON.parse(pyResult.trim().split('\n').pop());
     if (pyOutput.error) throw new Error(`collage_builder: ${pyOutput.error}`);
