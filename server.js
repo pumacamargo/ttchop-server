@@ -4,6 +4,7 @@ import collageRoutes from './routes/collage.js';
 import aiRoutes from './routes/ai.js';
 import speedRampRoutes from './routes/speedramp.js';
 import overlayRoutes from './routes/overlay.js';
+import { startScheduler } from './pipeline/scheduler.js';
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -48,4 +49,5 @@ app.get('/health', (_, res) => res.json({
 
 app.listen(PORT, () => {
   console.log(`ttchop-server 🎬 corriendo en puerto ${PORT}`);
+  startScheduler();
 });
