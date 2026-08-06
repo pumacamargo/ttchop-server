@@ -75,6 +75,9 @@ router.post('/create', async (req, res) => {
 
   console.log(`[${jobId}] Collage START | renderId: ${renderId}`);
 
+  // Respond immediately — pipeline runs in background
+  res.json({ status: 'pending', renderId, jobId });
+
   try {
     ensureTempDir();
 
@@ -153,26 +156,46 @@ OUTPUT FORMAT:
     const clips = recipe.ffmpegRecipe.clips;
     const clipOutSecs = (c) => (c.trimEnd - c.trimStart) / (c.speed || 1);
     const MAX_BODY_SECS = 3.0;
-
     const MIN_SPEED = 1.5;
-    // 4a. Enforce rules per body clip: min speed 1.5x, max 3s output
+
+    // 4a. Enforce rules per clip
+    const MAX_HOOK_SECS = 1.0;
     let enforced = 0;
     for (const c of clips) {
-      if (c.role === 'body') {
-        // Enforce minimum speed
+      if (c.role === 'hook') {
+        // Hook clips: max 1.0s output (should be 0.5-1.0s punchy cuts)
+        const out = clipOutSecs(c);
+        if (out > MAX_HOOK_SECS) {
+          console.log(`[${jobId}] FIX hook duration: ${c.clipId} out=${out.toFixed(2)}s → ${MAX_HOOK_SECS}s (speed=${c.speed})`);
+          c.trimEnd = c.trimStart + MAX_HOOK_SECS * (c.speed || 1);
+          enforced++;
+        }
+      } else {
+        // Treat anything that's not "hook" as body
+        if (!c.role || c.role !== 'body') {
+          console.log(`[${jobId}] WARNING: clip ${c.clipId} has role="${c.role}" — treating as body`);
+          c.role = 'body';
+        }
         if ((c.speed || 1) < MIN_SPEED) {
+          console.log(`[${jobId}] FIX speed: ${c.clipId} speed=${c.speed} → ${MIN_SPEED}`);
           c.speed = MIN_SPEED;
           enforced++;
         }
-        // Enforce max 3s output
         const out = clipOutSecs(c);
         if (out > MAX_BODY_SECS) {
+          console.log(`[${jobId}] FIX duration: ${c.clipId} out=${out.toFixed(2)}s → ${MAX_BODY_SECS}s (speed=${c.speed})`);
           c.trimEnd = c.trimStart + MAX_BODY_SECS * (c.speed || 1);
           enforced++;
         }
       }
     }
-    if (enforced > 0) console.log(`[${jobId}] Enforced rules on ${enforced} body clip(s)`);
+    if (enforced > 0) console.log(`[${jobId}] Enforced rules on ${enforced} clip(s)`);
+
+    // Log every clip for traceability
+    clips.forEach((c, i) => {
+      const out = clipOutSecs(c);
+      console.log(`[${jobId}] CLIP ${String(i+1).padStart(2,'0')} | ${c.role || '??'} | ${c.clipId} | start=${c.trimStart?.toFixed(2)} end=${c.trimEnd?.toFixed(2)} speed=${c.speed} → out=${out.toFixed(2)}s`);
+    });
 
     // 4b. Fill gap if clips sum < audio duration — cycle random body clips, no consecutive repeats
     let totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
@@ -215,7 +238,7 @@ OUTPUT FORMAT:
     console.log(`[${jobId}] Running collage_builder.py...`);
     const pyResult = execSync(
       `python3 ${SCRIPTS_DIR}/collage_builder.py "${recipePath}"`,
-      { timeout: 300_000, encoding: 'utf8' }
+      { timeout: 1_200_000, encoding: 'utf8' }
     );
     const pyOutput = JSON.parse(pyResult.trim().split('\n').pop());
     if (pyOutput.error) throw new Error(`collage_builder: ${pyOutput.error}`);
@@ -239,7 +262,7 @@ OUTPUT FORMAT:
       userId: req.body.userId || null,
     });
 
-    res.json({ status: 'done', videoUrl: publicUrl, renderId, jobId });
+    console.log(`[${jobId}] DONE | videoUrl: ${publicUrl}`);
 
   } catch (err) {
     console.error(`[${jobId}] ERROR:`, err.message);
@@ -253,7 +276,6 @@ OUTPUT FORMAT:
         productName: product?.name || null,
       });
     } catch (_) {}
-    res.status(500).json({ error: err.message, jobId });
   } finally {
     for (const f of [audioPath, recipePath, outputPath]) {
       if (f && existsSync(f)) unlinkSync(f);

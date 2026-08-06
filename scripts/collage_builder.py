@@ -106,6 +106,7 @@ def main():
 
     # --- Download and trim each clip ---
     trimmed_clips = []
+    download_cache = {}  # firebaseUrl -> local raw_path (avoids re-downloading filler clips)
 
     for i, clip in enumerate(clips):
         clip_id = clip.get("clipId", f"clip_{i}")
@@ -121,15 +122,18 @@ def main():
             logger.warning(f"Clip {clip_id} ({role}): invalid duration {duration:.3f}s, skipping")
             continue
 
-        # Resolve local path for this clip
-        raw_path = os.path.join(temp_dir, f"raw_{clip_id}.mp4")
-
+        # Resolve local path for this clip — reuse cached download if same URL
         if os.path.exists(local_src):
             raw_path = local_src
             logger.info(f"Clip {i} ({role}): using local file {local_src}")
+        elif firebase_url and firebase_url in download_cache:
+            raw_path = download_cache[firebase_url]
+            logger.info(f"Clip {i} ({role}): reusing cached download ({clip_id})")
         elif firebase_url:
+            raw_path = os.path.join(temp_dir, f"raw_{clip_id}.mp4")
             logger.info(f"Clip {i} ({role}): downloading from Firebase...")
             download_file(firebase_url, raw_path)
+            download_cache[firebase_url] = raw_path
         else:
             raise RuntimeError(f"Clip {clip_id}: no local file and no firebaseUrl")
 
