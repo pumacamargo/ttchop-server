@@ -31,6 +31,19 @@ router.post('/create', async (req, res) => {
   const jobId = randomBytes(6).toString('hex');
   const outPath = path.join(TEMP_DIR, `overlay_${jobId}.mp4`);
 
+  // Create render doc immediately so it appears in Renders tab right away
+  // (skip if this is a chained overlay from collage — collage already wrote the doc)
+  if (!req.body._fromCollage) {
+    await upsertRender({
+      taskId: renderId,
+      status: 'pending',
+      type: 'overlay',
+      productId: product?.id || null,
+      productName: product?.name || null,
+      userId: req.body.userId || null,
+    });
+  }
+
   const queuePos = enqueue(jobId, async () => {
     try {
       if (!existsSync(TEMP_DIR)) {

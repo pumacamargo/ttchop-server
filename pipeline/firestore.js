@@ -36,4 +36,19 @@ export async function upsertRender({
   }
 
   await ref.set(data, { merge: true });
+
+  // Keep scheduled_render in sync when a final status is reached
+  if (status === 'done' || status === 'failed') {
+    syncScheduledRenderStatus(db, taskId, status).catch(() => {});
+  }
+}
+
+async function syncScheduledRenderStatus(db, renderId, status) {
+  const snap = await db.collection('scheduled_renders')
+    .where('renderId', '==', renderId)
+    .limit(1)
+    .get();
+  if (!snap.empty) {
+    await snap.docs[0].ref.update({ status });
+  }
 }

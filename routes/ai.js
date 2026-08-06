@@ -78,14 +78,18 @@ router.post('/callback', async (req, res) => {
     const taskId = data.taskId;
     const isError = body.code !== 200 || !videoUrl;
 
+    const finalStatus = isError ? 'failed' : 'done';
+
     await upsertRender({
       taskId,
-      status: isError ? 'failed' : 'done',
+      status: finalStatus,
       videoUrl,
       errorMessage: isError ? (body.msg || 'Video generation failed') : null,
     });
 
-    res.json({ ok: true, taskId, status: isError ? 'failed' : 'done' });
+    // syncScheduledRenderStatus is called automatically inside upsertRender
+
+    res.json({ ok: true, taskId, status: finalStatus });
   } catch (err) {
     console.error('/ai/callback error:', err.message);
     res.status(500).json({ error: err.message });

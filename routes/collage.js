@@ -11,6 +11,7 @@ import { textToSpeech } from '../pipeline/elevenlabs.js';
 import { uploadToStorage } from '../pipeline/storage.js';
 import { upsertRender } from '../pipeline/firestore.js';
 import { enqueue } from '../pipeline/jobQueue.js';
+import fetch from 'node-fetch';
 
 const router = Router();
 const SCRIPTS_DIR = new URL('../scripts', import.meta.url).pathname;
@@ -63,10 +64,10 @@ Output ONLY the dialogue text, ready to be sent directly to ElevenLabs.`,
 });
 
 // POST /collage/create
-// Body: { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds? }
-// Pipeline completo: ElevenLabs TTS → ffmpeg recipe LLM → collage_builder.py → FTP → Firestore
+// Body: { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds?, needsOverlay? }
+// needsOverlay: true → al terminar el collage, encola automáticamente un overlay job
 router.post('/create', async (req, res) => {
-  const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration } = req.body;
+  const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration, needsOverlay = false } = req.body;
 
   if (!voiceId || !dialogue || !sessions || !renderId) {
     return res.status(400).json({ error: 'voiceId, dialogue, sessions y renderId son requeridos' });
@@ -79,10 +80,21 @@ router.post('/create', async (req, res) => {
 
   console.log(`[${jobId}] Collage START | renderId: ${renderId}`);
 
+  // Create render doc immediately so it appears in the Renders tab right away
+  await upsertRender({
+    taskId: renderId,
+    status: 'pending',
+    type: needsOverlay ? 'collage+overlay' : 'collage',
+    productId: product?.id || null,
+    productName: product?.name || null,
+    userId: req.body.userId || null,
+  });
+
   // Respond immediately — pipeline runs in queue
   const queuePos = enqueue(jobId, async () => {
     try {
       ensureTempDir();
+      await upsertRender({ taskId: renderId, status: 'running' });
 
     // 1. ElevenLabs TTS
     console.log(`[${jobId}] TTS...`);
@@ -255,15 +267,44 @@ OUTPUT FORMAT:
     console.log(`[${jobId}] Public URL: ${publicUrl}`);
 
     // 7. Update Firestore
-    await upsertRender({
-      taskId: renderId,
-      status: 'done',
-      videoUrl: publicUrl,
-      type: 'collage',
-      productId: product?.id || null,
-      productName: product?.name || null,
-      userId: req.body.userId || null,
-    });
+    if (needsOverlay) {
+      // Collage done — mark as collage_done, overlay will update to done
+      await upsertRender({
+        taskId: renderId,
+        status: 'collage_done',
+        videoUrl: publicUrl,
+        type: 'collage+overlay',
+        productId: product?.id || null,
+        productName: product?.name || null,
+        userId: req.body.userId || null,
+      });
+      console.log(`[${jobId}] Collage done — enqueueing overlay...`);
+      // Dispatch overlay job (reuses same renderId so webapp keeps polling)
+      fetch('http://localhost:3002/overlay/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true }),
+      }).then(async r => {
+        if (!r.ok) {
+          const err = await r.text();
+          console.error(`[${jobId}] Overlay dispatch error: ${err.slice(0, 200)}`);
+          await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.slice(0, 200)}` });
+        }
+      }).catch(async err => {
+        console.error(`[${jobId}] Overlay dispatch threw:`, err.message);
+        await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.message}` });
+      });
+    } else {
+      await upsertRender({
+        taskId: renderId,
+        status: 'done',
+        videoUrl: publicUrl,
+        type: 'collage',
+        productId: product?.id || null,
+        productName: product?.name || null,
+        userId: req.body.userId || null,
+      });
+    }
 
     console.log(`[${jobId}] DONE | videoUrl: ${publicUrl}`);
 

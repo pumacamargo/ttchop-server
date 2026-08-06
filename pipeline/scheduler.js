@@ -1,5 +1,6 @@
 import { getFirestore } from 'firebase-admin/firestore';
 import { ensureFirebase } from './firebase.js';
+import { upsertRender } from './firestore.js';
 import fetch from 'node-fetch';
 
 const SERVER_URL = 'http://localhost:3002';
@@ -12,16 +13,17 @@ async function tick() {
     const db  = getFirestore();
     const now = new Date().toISOString();
 
+    // Single-field query (no composite index needed); filter scheduledAt in JS
     const snap = await db.collection('scheduled_renders')
       .where('status', '==', 'pending')
-      .where('scheduledAt', '<=', now)
       .get();
 
-    if (snap.empty) return;
+    const due = snap.docs.filter(d => d.data().scheduledAt <= now);
+    if (due.length === 0) return;
 
-    console.log(`[scheduler] ${snap.docs.length} job(s) due`);
+    console.log(`[scheduler] ${due.length} job(s) due`);
 
-    for (const docSnap of snap.docs) {
+    for (const docSnap of due) {
       const job = { id: docSnap.id, ...docSnap.data() };
 
       // Mark running immediately to prevent double-execution on next tick
@@ -100,8 +102,65 @@ async function executeJob(db, job, jobRef) {
     if (!createRes.ok) throw new Error(`collage/create error: ${await createRes.text()}`);
 
   } else if (job.type === 'overlay') {
-    // overlay-only needs an existing videoUrl — not supported from scheduler yet
     throw new Error('overlay-only scheduled jobs not supported (no source videoUrl)');
+
+  } else if (job.type === 'ai') {
+    // Fetch AI template
+    let aiTemplate = null;
+    if (job.aiTemplateId) {
+      const t = await db.collection('templates').doc(job.aiTemplateId).get();
+      if (t.exists) aiTemplate = { id: t.id, ...t.data() };
+    }
+    if (!aiTemplate) throw new Error('No AI template found (check aiTemplateId)');
+
+    // Generate prompt
+    console.log(`[scheduler] Generating AI prompt for job ${job.id}...`);
+    const promptRes = await fetch(`${SERVER_URL}/ai/prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        productDescription: `${product.name}. ${product.description || ''}${job.extraNotes ? '. ' + job.extraNotes : ''}`,
+        aiTemplate,
+        language: job.language,
+      }),
+    });
+    if (!promptRes.ok) throw new Error(`ai/prompt error: ${await promptRes.text()}`);
+    const { prompt } = await promptRes.json();
+
+    // Create render doc immediately so it appears in Renders
+    await upsertRender({
+      taskId: renderId,
+      status: 'pending',
+      type: 'ai',
+      productId: product.id,
+      productName: product.name,
+      userId: job.userId,
+    });
+
+    // Submit to kie.ai
+    console.log(`[scheduler] Submitting AI video for job ${job.id} | model: ${job.model || 'seedance'}`);
+    const genRes = await fetch(`${SERVER_URL}/ai/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        imageUrls: product.modelSheetUrls || [],
+        model: job.model || 'seedance',
+        aspectRatio: '9:16',
+      }),
+    });
+    if (!genRes.ok) throw new Error(`ai/generate error: ${await genRes.text()}`);
+    const genData = await genRes.json();
+    const aiTaskId = genData.data?.taskId || genData.taskId || renderId;
+    console.log(`[scheduler] AI job submitted | aiTaskId: ${aiTaskId}`);
+
+    // The callback will update the render doc when the video is ready.
+    // If kie.ai returns a different taskId, we need to track it.
+    if (aiTaskId !== renderId) {
+      await upsertRender({ taskId: aiTaskId, status: 'pending', type: 'ai', productId: product.id, productName: product.name, userId: job.userId });
+      await jobRef.update({ renderId: aiTaskId });
+    }
+    return; // skip the generic renderId update below
   }
 
   // Store renderId on the scheduled_render so the webapp can cross-reference
