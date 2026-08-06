@@ -94,7 +94,7 @@ router.post('/create', async (req, res) => {
   const queuePos = enqueue(jobId, async () => {
     try {
       ensureTempDir();
-      await upsertRender({ taskId: renderId, status: 'running' });
+      await upsertRender({ taskId: renderId, status: 'processing' });
 
     // 1. ElevenLabs TTS
     console.log(`[${jobId}] TTS...`);
