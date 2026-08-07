@@ -126,3 +126,21 @@ kie.ai (automático cuando Seedance termina)
 ## Puerto
 
 Por defecto: `3002` (configurable via `PORT` en `.env`)
+
+## Cambios 2026-08-06
+
+### /ai/generate — correcciones de formato kie.ai
+
+- **Veo3** (`/veo/generate`): campo `imageUrls` (array, no `imageUrl` singular) — verificado contra el workflow de n8n. Solo la primera imagen se usa.
+- **Seedance** (`/jobs/createTask`): campo `reference_image_urls: [images[0]]` — una sola imagen en array. Antes se pasaban todas las imágenes del producto lo que causaba error 422 "Up to 9 images can be uploaded".
+- **Error detection**: kie.ai responde HTTP 200 incluso para errores — ahora se verifica `data.code !== 200` y se propaga el error correctamente al cliente.
+- **Veo3 payload**: quitados `enableTranslation` y `generationType` (no los manda n8n, causaban rechazo).
+- Logging agregado: `[kieai] Veo3 response:` / `[kieai] Seedance response:` en consola.
+
+### /collage/create — encadenamiento con overlay
+
+Nuevo parámetro opcional `needsOverlay: true` en el body. Cuando está activo, al terminar el collage automáticamente encola un job de overlay en ttchop-post con el mismo `renderId`. También acepta `overlayTemplateId` opcional.
+
+### /collage routes — fix status
+
+`status` en Firestore al iniciar un job es ahora `'processing'` (antes `'running'`). El campo `'running'` no era un valor válido para el `StatusBadge` del frontend y causaba crash en la pestaña Renders.

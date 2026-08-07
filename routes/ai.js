@@ -42,10 +42,14 @@ Respond with JSON: { "prompt": "...", "notes": "..." }`,
 // Body: { prompt, imageUrl, model: 'veo3'|'seedance', aspectRatio?, duration?, callBackUrl? }
 router.post('/generate', async (req, res) => {
   const { prompt, imageUrls, imageUrl, model = 'seedance', aspectRatio, callBackUrl, resolution, duration, generateAudio } = req.body;
-  const images = imageUrls || (imageUrl ? [imageUrl] : null);
+  const rawImages = imageUrls || (imageUrl ? [imageUrl] : []);
+  const images = (Array.isArray(rawImages) ? rawImages : [rawImages]).filter(Boolean);
 
-  if (!prompt || !images?.length) {
-    return res.status(400).json({ error: 'prompt e imageUrls son requeridos' });
+  if (!prompt) {
+    return res.status(400).json({ error: 'prompt es requerido' });
+  }
+  if (!images.length) {
+    return res.status(400).json({ error: 'El producto no tiene imágenes de model sheet. Súbelas en la sección de Clips del producto.' });
   }
 
   try {

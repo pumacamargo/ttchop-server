@@ -28,13 +28,11 @@ export async function generateVeo3({ prompt, imageUrls, aspectRatio = '9:16', ca
     headers: headers(),
     body: JSON.stringify({
       prompt: PRODUCT_FIDELITY_PREFIX + prompt,
-      imageUrls: Array.isArray(imageUrls) ? imageUrls : [imageUrls],
+      imageUrls: (Array.isArray(imageUrls) ? imageUrls : [imageUrls]).filter(Boolean).slice(0, 9),
       model: 'veo3_fast',
       callBackUrl: callBackUrl || `${serverUrl}/ai/callback`,
       aspect_ratio: aspectRatio,
       seeds: Math.floor(Math.random() * 90000) + 10000,
-      enableTranslation: true,
-      generationType: 'REFERENCE_2_VIDEO',
     }),
   });
 
@@ -44,6 +42,10 @@ export async function generateVeo3({ prompt, imageUrls, aspectRatio = '9:16', ca
   }
 
   const data = await res.json();
+  console.log('[kieai] Veo3 response:', JSON.stringify(data));
+  if (data.code !== 200) {
+    throw new Error(`kie.ai Veo3 error code ${data.code}: ${data.msg || JSON.stringify(data)}`);
+  }
   return data;
 }
 
@@ -58,7 +60,7 @@ export async function generateSeedance({ prompt, imageUrls, callBackUrl, aspectR
       callBackUrl: callBackUrl || `${serverUrl}/ai/callback`,
       input: {
         prompt: PRODUCT_FIDELITY_PREFIX + prompt,
-        reference_image_urls: images,
+        reference_image_urls: [images[0]],
         aspect_ratio: aspectRatio,
         resolution,
         duration,
@@ -73,5 +75,9 @@ export async function generateSeedance({ prompt, imageUrls, callBackUrl, aspectR
   }
 
   const data = await res.json();
+  console.log('[kieai] Seedance response:', JSON.stringify(data));
+  if (data.code !== 200) {
+    throw new Error(`kie.ai Seedance error code ${data.code}: ${data.msg || JSON.stringify(data)}`);
+  }
   return data;
 }
