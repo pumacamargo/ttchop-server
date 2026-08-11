@@ -69,18 +69,18 @@ def line_height(font):
 
 
 def add_glow(base_img, text, font, x, y):
-    """Yellow glow via additive blending — works on any background color."""
-    base_arr = np.array(base_img, dtype=np.float32)
+    """Yellow glow: blur only the alpha mask, paint solid yellow underneath — always visible."""
     for radius, strength in [(80, 2.5), (45, 3.0), (20, 3.5)]:
-        glow = Image.new('RGB', base_img.size, (0, 0, 0))
-        d = ImageDraw.Draw(glow)
-        d.text((x, y), text, font=font, fill=(255, 215, 0), anchor='mm')
-        glow = glow.filter(ImageFilter.GaussianBlur(radius))
-        glow_arr = np.array(glow, dtype=np.float32) * strength
-        base_arr[:, :, 0] = np.clip(base_arr[:, :, 0] + glow_arr[:, :, 0], 0, 255)
-        base_arr[:, :, 1] = np.clip(base_arr[:, :, 1] + glow_arr[:, :, 1], 0, 255)
-        base_arr[:, :, 2] = np.clip(base_arr[:, :, 2] + glow_arr[:, :, 2], 0, 255)
-    return Image.fromarray(base_arr.astype(np.uint8), 'RGBA')
+        # Alpha mask: white text on black, then blur
+        mask = Image.new('L', base_img.size, 0)
+        ImageDraw.Draw(mask).text((x, y), text, font=font, fill=255, anchor='mm')
+        mask = mask.filter(ImageFilter.GaussianBlur(radius))
+        mask = mask.point(lambda v: min(255, int(v * strength)))
+        # Solid yellow layer with the blurred alpha
+        glow = Image.new('RGBA', base_img.size, (255, 215, 0, 0))
+        glow.putalpha(mask)
+        base_img = Image.alpha_composite(base_img, glow)
+    return base_img
 
 
 def draw_outlined_text(draw, text, font, x, y):

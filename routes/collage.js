@@ -114,7 +114,13 @@ Respond ONLY with valid JSON, no markdown, no explanations.`,
 PRODUCT: ${JSON.stringify(product || {})}
 
 SESSIONS & CLIPS:
-${JSON.stringify(sessions)}
+${JSON.stringify(sessions.map(s => ({
+  ...s,
+  videos: (s.videos || []).map(v => {
+    const { thumbnailUrl, ...rest } = v;
+    return rest;
+  })
+})))}
 
 COLLAGE TEMPLATE:
 ${collageTemplate?.content || ''}

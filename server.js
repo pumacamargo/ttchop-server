@@ -12,6 +12,8 @@ const PORT = process.env.PORT || 3002;
 const ALLOWED_ORIGINS = [
   'https://ttchop.web.app',
   'https://ttchop.firebaseapp.com',
+  'https://ttchop2.web.app',
+  'https://ttchop2.firebaseapp.com',
   'http://localhost:5173',
   'http://localhost:3000',
 ];
