@@ -116,6 +116,34 @@ kie.ai (automático cuando Seedance termina)
     ← { ok: true }
 ```
 
+## Soporte multi-proyecto (ttchop / ttchop2)
+
+Este servidor atiende dos apps que usan proyectos de Firebase distintos: `ttchop`
+(original) y `ttchop2` (nueva). Cómo se elige a cuál escribir:
+
+- Las rutas `/collage/create`, `/overlay/create`, `/ai/generate` y `/speedramp/create`
+  leen `projectId` del body. Si viene `"ttchop2"` (y hay credenciales configuradas
+  para ese proyecto), el render y el archivo subido a Storage van al Firestore/Storage
+  de ttchop2.
+- Si `projectId` no viene, viene vacío, o viene con un valor no reconocido, se usa
+  **siempre** el proyecto por defecto (`ttchop`) — el comportamiento de siempre, sin
+  cambios. Esto es intencional: la app original (`ttchop`) nunca manda `projectId` y
+  no se va a actualizar.
+- `/ai/callback` lo llama kie.ai directamente y no puede mandar `projectId`. Para
+  saber a qué proyecto pertenece el render, el servidor busca el documento
+  `renders/{taskId}` en cada proyecto configurado y actualiza donde lo encuentre; si
+  no aparece en ninguno, cae al proyecto por defecto.
+- El scheduler (`pipeline/scheduler.js`) sondea el Firestore de **todos** los
+  proyectos configurados cada 60s, cada uno de forma independiente (un fallo en un
+  proyecto no detiene el sondeo de los demás).
+
+Credenciales necesarias por proyecto (ver `.env.example`):
+- **ttchop** (default): `FIREBASE_SERVICE_ACCOUNT` / `FIREBASE_SERVICE_ACCOUNT_PATH` + `FIREBASE_STORAGE_BUCKET`
+- **ttchop2** (opcional): `FIREBASE_SERVICE_ACCOUNT_TTCHOP2` / `FIREBASE_SERVICE_ACCOUNT_PATH_TTCHOP2` + `FIREBASE_STORAGE_BUCKET_TTCHOP2`
+
+Sin las variables de ttchop2, el servidor funciona exactamente igual que antes de
+este soporte multi-proyecto: todo se escribe en ttchop.
+
 ## Dependencias del sistema
 
 - Node.js 18+

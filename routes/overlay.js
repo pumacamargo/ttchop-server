@@ -23,6 +23,9 @@ function ensureTempDir() {
 // Calls overlay-server /render-data, uploads result, updates Firestore
 router.post('/create', async (req, res) => {
   const { renderId, product, videoUrl, overlayTemplate } = req.body;
+  // projectId: a qué proyecto (ttchop / ttchop2) escribir. Si viene encadenado
+  // desde /collage/create (_fromCollage), collage.js ya lo propagó en el body.
+  const { projectId } = req.body;
 
   if (!renderId || !product || !videoUrl) {
     return res.status(400).json({ error: 'renderId, product y videoUrl son requeridos' });
@@ -41,6 +44,7 @@ router.post('/create', async (req, res) => {
       productId: product?.id || null,
       productName: product?.name || null,
       userId: req.body.userId || null,
+      projectId,
     });
   }
 
@@ -81,7 +85,7 @@ router.post('/create', async (req, res) => {
       console.log(`[${jobId}] Overlay rendered — uploading...`);
 
       const filename = `overlay_${jobId}.mp4`;
-      const publicUrl = await uploadToStorage(outPath, filename);
+      const publicUrl = await uploadToStorage(outPath, filename, projectId);
       console.log(`[${jobId}] Uploaded: ${publicUrl}`);
 
       await upsertRender({
@@ -91,6 +95,7 @@ router.post('/create', async (req, res) => {
         type: 'overlay',
         productId: product?.id || null,
         productName: product?.name || null,
+        projectId,
       });
 
       console.log(`[${jobId}] DONE`);
@@ -104,6 +109,7 @@ router.post('/create', async (req, res) => {
           type: 'overlay',
           productId: product?.id || null,
           productName: product?.name || null,
+          projectId,
         });
       } catch (_) {}
     } finally {

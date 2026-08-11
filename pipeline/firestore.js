@@ -1,5 +1,4 @@
-import { getFirestore } from 'firebase-admin/firestore';
-import { ensureFirebase } from './firebase.js';
+import { getDb } from './firebase.js';
 
 export async function upsertRender({
   taskId,
@@ -11,9 +10,10 @@ export async function upsertRender({
   productId = null,
   productName = null,
   userId = null,
+  // A qué proyecto (ttchop / ttchop2) escribir. Ausente o desconocido → default.
+  projectId = null,
 }) {
-  ensureFirebase();
-  const db = getFirestore();
+  const db = getDb(projectId);
   const ref = db.collection('renders').doc(taskId);
 
   const now = new Date().toISOString();

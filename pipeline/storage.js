@@ -1,10 +1,8 @@
-import { getStorage } from 'firebase-admin/storage';
-import { ensureFirebase } from './firebase.js';
+import { getBucket } from './firebase.js';
 import { v4 as uuidv4 } from 'uuid';
 
-export async function uploadToStorage(localPath, remoteFilename) {
-  ensureFirebase();
-  const bucket = getStorage().bucket();
+export async function uploadToStorage(localPath, remoteFilename, projectId) {
+  const bucket = getBucket(projectId);
   const destination = `collage/${remoteFilename}`;
 
   // Generar un download token para que la URL sea compatible con el SDK de Firebase

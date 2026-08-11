@@ -2,8 +2,31 @@ import { Router } from 'express';
 import { callLLMJson } from '../pipeline/llm.js';
 import { generateVeo3, generateSeedance } from '../pipeline/kieai.js';
 import { upsertRender } from '../pipeline/firestore.js';
+import { getDb, getConfiguredProjects, DEFAULT_PROJECT_ID } from '../pipeline/firebase.js';
 
 const router = Router();
+
+// kie.ai llama a /ai/callback directamente y NO manda projectId (no lo conoce,
+// ni tiene por qué). El render se identifica solo por taskId, así que para
+// saber a qué proyecto (ttchop / ttchop2) hay que escribirle, buscamos el
+// documento renders/{taskId} en cada proyecto configurado y usamos el primero
+// donde exista. El doc pending ya se creó antes en el proyecto correcto — por
+// /collage o /ai vía este mismo servidor, o por la webapp directamente vía su
+// SDK de Firestore — así que para el momento del callback casi siempre existe.
+// Si no aparece en ninguno (caso raro), caemos al proyecto por defecto: es
+// preferible escribir en el lugar de siempre que perder el update.
+async function findProjectForRender(taskId) {
+  if (!taskId) return DEFAULT_PROJECT_ID;
+  for (const projectId of getConfiguredProjects()) {
+    try {
+      const snap = await getDb(projectId).collection('renders').doc(taskId).get();
+      if (snap.exists) return projectId;
+    } catch (err) {
+      console.error(`[ai/callback] error buscando taskId ${taskId} en ${projectId}:`, err.message);
+    }
+  }
+  return DEFAULT_PROJECT_ID;
+}
 
 // POST /ai/prompt
 // Body: { productDescription, aiTemplate: { content }, language }
@@ -83,12 +106,14 @@ router.post('/callback', async (req, res) => {
     const isError = body.code !== 200 || !videoUrl;
 
     const finalStatus = isError ? 'failed' : 'done';
+    const projectId = await findProjectForRender(taskId);
 
     await upsertRender({
       taskId,
       status: finalStatus,
       videoUrl,
       errorMessage: isError ? (body.msg || 'Video generation failed') : null,
+      projectId,
     });
 
     // syncScheduledRenderStatus is called automatically inside upsertRender

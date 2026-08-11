@@ -1,5 +1,4 @@
-import { getFirestore } from 'firebase-admin/firestore';
-import { ensureFirebase } from './firebase.js';
+import { getDb, getConfiguredProjects } from './firebase.js';
 import { upsertRender } from './firestore.js';
 import fetch from 'node-fetch';
 
@@ -7,40 +6,48 @@ const SERVER_URL = 'http://localhost:3002';
 const TICK_MS    = 60_000; // every 60 seconds
 
 // ── Main tick ──────────────────────────────────────────────────────────────────
+// Recorre TODOS los proyectos configurados (ttchop, y ttchop2 si tiene
+// credenciales) y sondea el Firestore de cada uno por separado. Un fallo
+// sondeando un proyecto no debe impedir que se sondeen los demás.
 async function tick() {
-  try {
-    ensureFirebase();
-    const db  = getFirestore();
-    const now = new Date().toISOString();
-
-    // Single-field query (no composite index needed); filter scheduledAt in JS
-    const snap = await db.collection('scheduled_renders')
-      .where('status', '==', 'pending')
-      .get();
-
-    const due = snap.docs.filter(d => d.data().scheduledAt <= now);
-    if (due.length === 0) return;
-
-    console.log(`[scheduler] ${due.length} job(s) due`);
-
-    for (const docSnap of due) {
-      const job = { id: docSnap.id, ...docSnap.data() };
-
-      // Mark running immediately to prevent double-execution on next tick
-      await docSnap.ref.update({ status: 'running', startedAt: now });
-
-      executeJob(db, job, docSnap.ref).catch(async err => {
-        console.error(`[scheduler] Job ${job.id} failed:`, err.message);
-        await docSnap.ref.update({ status: 'failed', errorMessage: err.message });
-      });
+  for (const projectId of getConfiguredProjects()) {
+    try {
+      await tickProject(projectId);
+    } catch (err) {
+      console.error(`[scheduler] [${projectId}] tick error:`, err.message);
     }
-  } catch (err) {
-    console.error('[scheduler] tick error:', err.message);
+  }
+}
+
+async function tickProject(projectId) {
+  const db  = getDb(projectId);
+  const now = new Date().toISOString();
+
+  // Single-field query (no composite index needed); filter scheduledAt in JS
+  const snap = await db.collection('scheduled_renders')
+    .where('status', '==', 'pending')
+    .get();
+
+  const due = snap.docs.filter(d => d.data().scheduledAt <= now);
+  if (due.length === 0) return;
+
+  console.log(`[scheduler] [${projectId}] ${due.length} job(s) due`);
+
+  for (const docSnap of due) {
+    const job = { id: docSnap.id, ...docSnap.data() };
+
+    // Mark running immediately to prevent double-execution on next tick
+    await docSnap.ref.update({ status: 'running', startedAt: now });
+
+    executeJob(db, job, docSnap.ref, projectId).catch(async err => {
+      console.error(`[scheduler] [${projectId}] Job ${job.id} failed:`, err.message);
+      await docSnap.ref.update({ status: 'failed', errorMessage: err.message });
+    });
   }
 }
 
 // ── Execute one scheduled job ──────────────────────────────────────────────────
-async function executeJob(db, job, jobRef) {
+async function executeJob(db, job, jobRef, projectId) {
   // Fetch product
   const productSnap = await db.collection('products').doc(job.productId).get();
   if (!productSnap.exists) throw new Error(`Product ${job.productId} not found`);
@@ -97,6 +104,7 @@ async function executeJob(db, job, jobRef) {
         language: job.language,
         needsOverlay: job.type === 'collage+overlay',
         userId: job.userId,
+        projectId,
       }),
     });
     if (!createRes.ok) throw new Error(`collage/create error: ${await createRes.text()}`);
@@ -135,6 +143,7 @@ async function executeJob(db, job, jobRef) {
       productId: product.id,
       productName: product.name,
       userId: job.userId,
+      projectId,
     });
 
     // Submit to kie.ai
@@ -147,6 +156,7 @@ async function executeJob(db, job, jobRef) {
         imageUrls: product.modelSheetUrls || [],
         model: job.model || 'seedance',
         aspectRatio: '9:16',
+        projectId,
       }),
     });
     if (!genRes.ok) throw new Error(`ai/generate error: ${await genRes.text()}`);
@@ -157,7 +167,7 @@ async function executeJob(db, job, jobRef) {
     // The callback will update the render doc when the video is ready.
     // If kie.ai returns a different taskId, we need to track it.
     if (aiTaskId !== renderId) {
-      await upsertRender({ taskId: aiTaskId, status: 'pending', type: 'ai', productId: product.id, productName: product.name, userId: job.userId });
+      await upsertRender({ taskId: aiTaskId, status: 'pending', type: 'ai', productId: product.id, productName: product.name, userId: job.userId, projectId });
       await jobRef.update({ renderId: aiTaskId });
     }
     return; // skip the generic renderId update below

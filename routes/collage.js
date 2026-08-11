@@ -68,6 +68,8 @@ Output ONLY the dialogue text, ready to be sent directly to ElevenLabs.`,
 // needsOverlay: true → al terminar el collage, encola automáticamente un overlay job
 router.post('/create', async (req, res) => {
   const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration, needsOverlay = false } = req.body;
+  // projectId: a qué proyecto (ttchop / ttchop2) escribir. Ausente → default (ttchop).
+  const { projectId } = req.body;
 
   if (!voiceId || !dialogue || !sessions || !renderId) {
     return res.status(400).json({ error: 'voiceId, dialogue, sessions y renderId son requeridos' });
@@ -78,7 +80,7 @@ router.post('/create', async (req, res) => {
   const recipePath = path.join(TEMP_DIR, `recipe_${jobId}.json`);
   const outputPath = path.join(TEMP_DIR, `collage_${jobId}.mp4`);
 
-  console.log(`[${jobId}] Collage START | renderId: ${renderId}`);
+  console.log(`[${jobId}] Collage START | renderId: ${renderId} | projectId: ${projectId || 'default'}`);
 
   // Create render doc immediately so it appears in the Renders tab right away
   await upsertRender({
@@ -88,13 +90,14 @@ router.post('/create', async (req, res) => {
     productId: product?.id || null,
     productName: product?.name || null,
     userId: req.body.userId || null,
+    projectId,
   });
 
   // Respond immediately — pipeline runs in queue
   const queuePos = enqueue(jobId, async () => {
     try {
       ensureTempDir();
-      await upsertRender({ taskId: renderId, status: 'processing' });
+      await upsertRender({ taskId: renderId, status: 'processing', projectId });
 
     // 1. ElevenLabs TTS
     console.log(`[${jobId}] TTS...`);
@@ -269,7 +272,7 @@ OUTPUT FORMAT:
     // 6. Upload to Firebase Storage
     console.log(`[${jobId}] Uploading to Firebase Storage...`);
     const filename = `${new Date().toISOString().replace(/[:.]/g, '-').replace('T', '_').slice(0, 19)}_${jobId}.mp4`;
-    const publicUrl = await uploadToStorage(outputPath, filename);
+    const publicUrl = await uploadToStorage(outputPath, filename, projectId);
     console.log(`[${jobId}] Public URL: ${publicUrl}`);
 
     // 7. Update Firestore
@@ -283,22 +286,24 @@ OUTPUT FORMAT:
         productId: product?.id || null,
         productName: product?.name || null,
         userId: req.body.userId || null,
+        projectId,
       });
       console.log(`[${jobId}] Collage done — enqueueing overlay...`);
       // Dispatch overlay job (reuses same renderId so webapp keeps polling)
+      // Propagamos projectId para que el overlay encadenado escriba en el mismo proyecto.
       fetch('http://localhost:3002/overlay/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true }),
+        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true, projectId }),
       }).then(async r => {
         if (!r.ok) {
           const err = await r.text();
           console.error(`[${jobId}] Overlay dispatch error: ${err.slice(0, 200)}`);
-          await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.slice(0, 200)}` });
+          await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.slice(0, 200)}`, projectId });
         }
       }).catch(async err => {
         console.error(`[${jobId}] Overlay dispatch threw:`, err.message);
-        await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.message}` });
+        await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.message}`, projectId });
       });
     } else {
       await upsertRender({
@@ -309,6 +314,7 @@ OUTPUT FORMAT:
         productId: product?.id || null,
         productName: product?.name || null,
         userId: req.body.userId || null,
+        projectId,
       });
     }
 
@@ -324,6 +330,7 @@ OUTPUT FORMAT:
           type: 'collage',
           productId: product?.id || null,
           productName: product?.name || null,
+          projectId,
         });
       } catch (_) {}
     } finally {

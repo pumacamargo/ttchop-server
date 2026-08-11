@@ -70,6 +70,8 @@ router.post('/create', async (req, res) => {
       userId = 'default',
       productId = '',
       productName = '',
+      // projectId: a qué proyecto (ttchop / ttchop2) escribir. Ausente → default.
+      projectId,
     } = req.body;
 
     if (!audioUrl) return res.status(400).json({ error: 'audioUrl is required' });
@@ -171,7 +173,7 @@ router.post('/create', async (req, res) => {
     // 6. Upload to Firebase
     console.log(`[SR ${jobId}] Uploading to Firebase...`);
     const remoteFilename = `${renderId}.mp4`;
-    const firebaseUrl = await uploadToStorage(outputPath, remoteFilename);
+    const firebaseUrl = await uploadToStorage(outputPath, remoteFilename, projectId);
 
     // 7. Save to Firestore
     await upsertRender({
@@ -182,6 +184,7 @@ router.post('/create', async (req, res) => {
       userId,
       productId,
       productName,
+      projectId,
     });
 
     // Cleanup
