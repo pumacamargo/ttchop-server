@@ -7,7 +7,7 @@ const execAsync = promisify(exec);
 import path from 'path';
 import { randomBytes } from 'crypto';
 import { callLLM, callLLMJson } from '../pipeline/llm.js';
-import { textToSpeech } from '../pipeline/elevenlabs.js';
+import { textToSpeech, textToSpeechWithTimestamps } from '../pipeline/elevenlabs.js';
 import { uploadToStorage } from '../pipeline/storage.js';
 import { upsertRender } from '../pipeline/firestore.js';
 import { enqueue } from '../pipeline/jobQueue.js';
@@ -58,6 +58,96 @@ Output ONLY the dialogue text, ready to be sent directly to ElevenLabs.`,
     });
 
     res.json({ dialogue: result.trim() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Set curado de emociones para la feature de mascot (ver /dialogue/structured)
+const MASCOT_EMOTIONS = ['happy', 'excited', 'surprised', 'sarcastic', 'annoyed', 'sighs', 'laughs', 'curious'];
+
+// POST /collage/dialogue/structured
+// Body: { product: { name, description }, collageTemplate: { content }, language, voiceId }
+// Endpoint NUEVO y aditivo — no reemplaza /dialogue. Genera el diálogo como líneas
+// estructuradas con emoción (para el mascot), sintetiza el audio completo con
+// ElevenLabs /with-timestamps, y devuelve por línea el startSec/endSec dentro del
+// audio final calculado a partir del alignment por carácter.
+router.post('/dialogue/structured', async (req, res) => {
+  const { product, collageTemplate, language, voiceId } = req.body;
+
+  if (!product?.name || !collageTemplate?.content) {
+    return res.status(400).json({ error: 'product.name y collageTemplate.content son requeridos' });
+  }
+  if (!voiceId) {
+    return res.status(400).json({ error: 'voiceId es requerido' });
+  }
+
+  try {
+    const result = await callLLMJson({
+      system: `You are an expert AI scriptwriter and audio prompt engineer specialized in creating high-quality spoken dialogue and voiceover scripts for ElevenLabs Eleven v3.
+Respond ONLY with valid JSON, no markdown, no explanations, in this exact shape:
+{ "lines": [{ "text": "...", "emotion": "..." }, ...] }
+Each "text" is one spoken line of dialogue, with NO bracketed emotion tags inline (the emotion goes only in the "emotion" field).
+Each "emotion" MUST be exactly one of: ${MASCOT_EMOTIONS.join(', ')}.`,
+      user: `Generate the final spoken dialogue output based on this information, broken into short lines with one emotion per line.
+
+PRODUCT INFORMATION:
+Name: ${product.name}
+Description: ${product.description || ''}
+
+VIDEO/AUDIO TEMPLATE DESCRIPTION:
+${collageTemplate.content}
+
+DIALOGUE LANGUAGE: ${language || 'spanish'}
+
+Output ONLY the JSON object described above.`,
+    });
+
+    const lines = Array.isArray(result?.lines) ? result.lines : [];
+    if (lines.length === 0) {
+      return res.status(502).json({ error: 'LLM no devolvió líneas de diálogo válidas' });
+    }
+
+    // Si el LLM alucina una emoción fuera del set curado, cae a "curious".
+    for (const line of lines) {
+      if (!MASCOT_EMOTIONS.includes(line.emotion)) line.emotion = 'curious';
+    }
+
+    // Unimos las líneas con un espacio simple para formar el texto completo que
+    // se manda a ElevenLabs. Guardamos el offset [start,end) de cada línea dentro
+    // de ese texto unido para luego mapearlo a character_start/end_times_seconds.
+    const JOINER = ' ';
+    let fullText = '';
+    const offsets = [];
+    for (const line of lines) {
+      const start = fullText.length;
+      fullText += line.text;
+      offsets.push({ start, end: fullText.length });
+      fullText += JOINER;
+    }
+
+    const { audioBase64, alignment } = await textToSpeechWithTimestamps({ text: fullText, voiceId });
+
+    const charStarts = alignment?.character_start_times_seconds;
+    const charEnds = alignment?.character_end_times_seconds;
+    if (!Array.isArray(charStarts) || !Array.isArray(charEnds) || charStarts.length === 0) {
+      return res.status(502).json({ error: 'ElevenLabs no devolvió alignment con timestamps' });
+    }
+    const lastIdx = charStarts.length - 1;
+
+    const linesOut = lines.map((line, i) => {
+      const { start, end } = offsets[i];
+      const startIdx = Math.min(start, lastIdx);
+      const endIdx = Math.min(Math.max(end - 1, startIdx), lastIdx);
+      return {
+        text: line.text,
+        emotion: line.emotion,
+        startSec: charStarts[startIdx] ?? 0,
+        endSec: charEnds[endIdx] ?? charEnds[lastIdx] ?? 0,
+      };
+    });
+
+    res.json({ audio: audioBase64, lines: linesOut });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
