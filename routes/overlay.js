@@ -19,10 +19,11 @@ function ensureTempDir() {
 }
 
 // POST /overlay/create
-// Body: { renderId, product, videoUrl, overlayTemplate }
+// Body: { renderId, product, videoUrl, overlayTemplate, mascotSegments? }
 // Calls overlay-server /render-data, uploads result, updates Firestore
+// mascotSegments: opcional — se propaga sin tocar hacia overlay-server /render-data.
 router.post('/create', async (req, res) => {
-  const { renderId, product, videoUrl, overlayTemplate } = req.body;
+  const { renderId, product, videoUrl, overlayTemplate, mascotSegments } = req.body;
   // projectId: a qué proyecto (ttchop / ttchop2) escribir. Si viene encadenado
   // desde /collage/create (_fromCollage), collage.js ya lo propagó en el body.
   const { projectId } = req.body;
@@ -71,6 +72,7 @@ router.post('/create', async (req, res) => {
           },
           template: 'default',
           market,
+          ...(mascotSegments && { mascotSegments }),
         }),
         timeout: 600_000,
       });

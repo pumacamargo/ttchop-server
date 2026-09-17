@@ -154,10 +154,14 @@ Output ONLY the JSON object described above.`,
 });
 
 // POST /collage/create
-// Body: { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds?, needsOverlay? }
+// Body: { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds?, needsOverlay?, audioBase64?, mascotSegments? }
 // needsOverlay: true → al terminar el collage, encola automáticamente un overlay job
+// audioBase64: opcional — si viene, se usa este audio tal cual (ya sintetizado, ej. por
+//   /collage/dialogue/structured) en vez de sintetizarlo de nuevo. Así el timing de
+//   mascotSegments coincide exactamente con el audio del video final.
+// mascotSegments: opcional — se propaga sin tocar hacia /overlay/create si needsOverlay.
 router.post('/create', async (req, res) => {
-  const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration, needsOverlay = false } = req.body;
+  const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration, needsOverlay = false, audioBase64, mascotSegments } = req.body;
   // projectId: a qué proyecto (ttchop / ttchop2) escribir. Ausente → default (ttchop).
   const { projectId } = req.body;
 
@@ -189,9 +193,16 @@ router.post('/create', async (req, res) => {
       ensureTempDir();
       await upsertRender({ taskId: renderId, status: 'processing', projectId });
 
-    // 1. ElevenLabs TTS
-    console.log(`[${jobId}] TTS...`);
-    await textToSpeech({ text: dialogue, voiceId, outputPath: audioPath });
+    // 1. ElevenLabs TTS — si ya viene audio pre-sintetizado (audioBase64), reusarlo tal
+    // cual en vez de sintetizar de nuevo (garantiza que mascotSegments, calculado sobre
+    // ese audio, quede sincronizado con el audio real del video final).
+    if (audioBase64) {
+      console.log(`[${jobId}] Usando audio pre-sintetizado (audioBase64)...`);
+      writeFileSync(audioPath, Buffer.from(audioBase64, 'base64'));
+    } else {
+      console.log(`[${jobId}] TTS...`);
+      await textToSpeech({ text: dialogue, voiceId, outputPath: audioPath });
+    }
 
     // 2. Audio duration
     const audioDurationSeconds = clientAudioDuration || await getAudioDuration(audioPath);
@@ -384,7 +395,7 @@ OUTPUT FORMAT:
       fetch('http://localhost:3002/overlay/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true, projectId }),
+        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true, projectId, mascotSegments }),
       }).then(async r => {
         if (!r.ok) {
           const err = await r.text();

@@ -5,6 +5,33 @@ import fetch from 'node-fetch';
 const SERVER_URL = 'http://localhost:3002';
 const TICK_MS    = 60_000; // every 60 seconds
 
+// ── Mascot helpers (feature opt-in vía job.mascotEnabled — ver executeJob) ──────
+// Mismo formato de doc id que containerDocId() en ttchop2/src/services/databaseService.ts.
+function containerDocId(userId, accountId) {
+  return accountId ? `${userId}__${accountId}` : userId;
+}
+
+// Mapea cada línea {emotion, startSec, endSec} a un asset real de mascotAssets por
+// emoción. Si no hay match, cae a los assets "idle"/"idleOpenMouth" intercalados (si
+// existen). Si no hay ningún asset posible para una línea, esa línea se omite (no se
+// inventa nada).
+function buildMascotSegments(lines, mascotAssets) {
+  if (!Array.isArray(mascotAssets) || mascotAssets.length === 0) return [];
+  const idleAssets = mascotAssets.filter(a => a.emotion === 'idle' || a.emotion === 'idleOpenMouth');
+  let idleToggle = 0;
+  const segments = [];
+  for (const line of lines) {
+    let asset = mascotAssets.find(a => a.emotion === line.emotion);
+    if (!asset && idleAssets.length > 0) {
+      asset = idleAssets[idleToggle % idleAssets.length];
+      idleToggle++;
+    }
+    if (!asset) continue;
+    segments.push({ startSec: line.startSec, endSec: line.endSec, url: asset.url, type: asset.type });
+  }
+  return segments;
+}
+
 // ── Main tick ──────────────────────────────────────────────────────────────────
 // Recorre TODOS los proyectos configurados (ttchop, y ttchop2 si tiene
 // credenciales) y sondea el Firestore de cada uno por separado. Un fallo
@@ -79,15 +106,39 @@ async function executeJob(db, job, jobRef, projectId) {
       if (t.exists) collageTemplate = { id: t.id, ...t.data() };
     }
 
-    // Generate dialogue
-    console.log(`[scheduler] Generating dialogue for job ${job.id}...`);
-    const dialogueRes = await fetch(`${SERVER_URL}/collage/dialogue`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product, collageTemplate, language: job.language }),
-    });
-    if (!dialogueRes.ok) throw new Error(`dialogue error: ${await dialogueRes.text()}`);
-    const { dialogue } = await dialogueRes.json();
+    // Generate dialogue — dos caminos, ambos conviven sin tocarse entre sí:
+    let dialogue, audioBase64, mascotSegments;
+
+    if (job.mascotEnabled) {
+      // ── Flujo con mascota (opt-in vía job.mascotEnabled) ──────────────────────
+      console.log(`[scheduler] Generating structured dialogue (mascot) for job ${job.id}...`);
+      const structuredRes = await fetch(`${SERVER_URL}/collage/dialogue/structured`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product, collageTemplate, language: job.language, voiceId }),
+      });
+      if (!structuredRes.ok) throw new Error(`dialogue/structured error: ${await structuredRes.text()}`);
+      const structured = await structuredRes.json();
+      audioBase64 = structured.audio;
+      dialogue = structured.lines.map(l => l.text).join(' ');
+
+      // mascotAssets vive en brand_concepts del mismo proyecto/db ya obtenido arriba.
+      const docId = containerDocId(job.userId, job.accountId);
+      const brandSnap = await db.collection('brand_concepts').doc(docId).get();
+      const mascotAssets = brandSnap.exists ? (brandSnap.data().mascotAssets || []) : [];
+      mascotSegments = buildMascotSegments(structured.lines, mascotAssets);
+      console.log(`[scheduler] Job ${job.id}: ${mascotSegments.length}/${structured.lines.length} líneas con mascota`);
+    } else {
+      // ── Flujo original, sin cambios ────────────────────────────────────────
+      console.log(`[scheduler] Generating dialogue for job ${job.id}...`);
+      const dialogueRes = await fetch(`${SERVER_URL}/collage/dialogue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product, collageTemplate, language: job.language }),
+      });
+      if (!dialogueRes.ok) throw new Error(`dialogue error: ${await dialogueRes.text()}`);
+      dialogue = (await dialogueRes.json()).dialogue;
+    }
 
     // Enqueue collage (and optional overlay)
     console.log(`[scheduler] Enqueueing collage for job ${job.id} | renderId: ${renderId}`);
@@ -105,6 +156,8 @@ async function executeJob(db, job, jobRef, projectId) {
         needsOverlay: job.type === 'collage+overlay',
         userId: job.userId,
         projectId,
+        ...(audioBase64 && { audioBase64 }),
+        ...(mascotSegments && { mascotSegments }),
       }),
     });
     if (!createRes.ok) throw new Error(`collage/create error: ${await createRes.text()}`);
