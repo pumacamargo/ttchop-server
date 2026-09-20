@@ -11,24 +11,107 @@ function containerDocId(userId, accountId) {
   return accountId ? `${userId}__${accountId}` : userId;
 }
 
-// Mapea cada línea {emotion, startSec, endSec} a un asset real de mascotAssets por
-// emoción. Si no hay match, cae a los assets "idle"/"idleOpenMouth" intercalados (si
-// existen). Si no hay ningún asset posible para una línea, esa línea se omite (no se
-// inventa nada).
+// Ciclo de poses por línea de diálogo:
+//   slot 0 (0–2s):  imagen 1 de la emoción
+//   slot 1 (2–4s):  imagen 2 de la misma emoción
+//   slot 2 (4–6s):  imagen 1 de la emoción prima (pausa visual)
+//   slot 3 (6–8s):  imagen 2 de la emoción prima
+//   slot 4+:        vuelve a imagen 1 de la emoción, etc.
+// Si llega una emoción distinta antes de los 2s, esa toma el control.
+// Si no hay asset para la emoción, cae a idle.
+const POSE_CYCLE_SEC = 4.0;
+const PRIMA_EMOTION = {
+  happily:      'excited',
+  excited:      'curious',
+  curious:      'happily',
+  surprised:    'excited',
+  sarcastically:'annoyed',
+  annoyed:      'sarcastically',
+  sighs:        'curious',
+  laughs:       'happily',
+};
+
 function buildMascotSegments(lines, mascotAssets) {
   if (!Array.isArray(mascotAssets) || mascotAssets.length === 0) return [];
-  const idleAssets = mascotAssets.filter(a => a.emotion === 'idle' || a.emotion === 'idleOpenMouth');
-  let idleToggle = 0;
-  const segments = [];
-  for (const line of lines) {
-    let asset = mascotAssets.find(a => a.emotion === line.emotion);
-    if (!asset && idleAssets.length > 0) {
-      asset = idleAssets[idleToggle % idleAssets.length];
-      idleToggle++;
-    }
-    if (!asset) continue;
-    segments.push({ startSec: line.startSec, endSec: line.endSec, url: asset.url, type: asset.type });
+
+  const byEmotion = {};
+  for (const a of mascotAssets) {
+    if (!byEmotion[a.emotion]) byEmotion[a.emotion] = [];
+    byEmotion[a.emotion].push(a);
   }
+
+  const idlePool = [
+    ...(byEmotion['idle'] || []),
+    ...(byEmotion['idleOpenMouth'] || []),
+  ];
+  const effectiveIdlePool = idlePool.length > 0
+    ? idlePool
+    : (byEmotion['curious'] || byEmotion['happily'] || []);
+
+  // Devuelve la secuencia de ciclo para una emoción:
+  // [emo[0], emo[1], prima[0], prima[1], emo[0], emo[1], ...]
+  function cycleFor(emotion) {
+    const pool  = byEmotion[emotion] || [];
+    const prima = PRIMA_EMOTION[emotion];
+    const pp    = prima ? (byEmotion[prima] || []) : [];
+    const seq   = [];
+    if (pool.length > 0) seq.push(pool[0]);
+    if (pool.length > 1) seq.push(pool[1]); else if (pool.length > 0) seq.push(pool[0]);
+    if (pp.length   > 0) seq.push(pp[0]);
+    if (pp.length   > 1) seq.push(pp[1]);   else if (pp.length   > 0) seq.push(pp[0]);
+    return seq;
+  }
+
+  // Build raw segments (1 por línea de diálogo)
+  const rawSegs = [];
+  for (const line of lines) {
+    const pool = byEmotion[line.emotion];
+    rawSegs.push({
+      startSec: line.startSec,
+      endSec:   line.endSec,
+      emotion:  line.emotion,
+      useIdle:  !pool || pool.length === 0,
+    });
+  }
+  if (rawSegs.length === 0) return [];
+
+  // Prepend idle (mínimo 1s)
+  const MIN_IDLE_SEC = 1.0;
+  const idleEnd = Math.max(MIN_IDLE_SEC, rawSegs[0].startSec);
+  rawSegs.unshift({ startSec: 0, endSec: idleEnd, emotion: 'idle', useIdle: true });
+  if (rawSegs[1] && rawSegs[1].startSec < idleEnd) rawSegs[1].startSec = idleEnd;
+
+  // Cerrar gaps
+  for (let i = 0; i < rawSegs.length - 1; i++) rawSegs[i].endSec = rawSegs[i + 1].startSec;
+
+  // Expandir cada línea en sub-segmentos de 2s ciclando por la secuencia
+  const segments = [];
+  const idleCycleState = { idx: 0 };
+
+  for (const raw of rawSegs) {
+    let t = raw.startSec;
+    let slot = 0; // cada línea reinicia el ciclo en slot 0
+
+    while (t < raw.endSec - 0.05) {
+      const end = Math.min(t + POSE_CYCLE_SEC, raw.endSec);
+      let asset = null;
+
+      if (raw.useIdle || raw.emotion === 'idle') {
+        if (effectiveIdlePool.length > 0) {
+          asset = effectiveIdlePool[idleCycleState.idx % effectiveIdlePool.length];
+          idleCycleState.idx++;
+        }
+      } else {
+        const cycle = cycleFor(raw.emotion);
+        if (cycle.length > 0) asset = cycle[slot % cycle.length];
+        slot++;
+      }
+
+      if (asset) segments.push({ startSec: t, endSec: end, url: asset.url, type: asset.type, emotion: raw.emotion });
+      t = end;
+    }
+  }
+
   return segments;
 }
 

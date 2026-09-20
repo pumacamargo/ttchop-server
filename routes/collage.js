@@ -63,8 +63,10 @@ Output ONLY the dialogue text, ready to be sent directly to ElevenLabs.`,
   }
 });
 
-// Set curado de emociones para la feature de mascot (ver /dialogue/structured)
-const MASCOT_EMOTIONS = ['happy', 'excited', 'surprised', 'sarcastic', 'annoyed', 'sighs', 'laughs', 'curious'];
+// Emociones de mascot — alineadas 1:1 con los audio tags oficiales de ElevenLabs eleven_v3.
+// Se inyectan como [emotion] en el texto para afectar la entrega vocal Y seleccionar la pose.
+// Ref: https://elevenlabs.io/blog/v3-audiotags
+const MASCOT_EMOTIONS = ['happily', 'excited', 'surprised', 'sarcastically', 'annoyed', 'sighs', 'laughs', 'curious'];
 
 // POST /collage/dialogue/structured
 // Body: { product: { name, description }, collageTemplate: { content }, language, voiceId }
@@ -87,8 +89,9 @@ router.post('/dialogue/structured', async (req, res) => {
       system: `You are an expert AI scriptwriter and audio prompt engineer specialized in creating high-quality spoken dialogue and voiceover scripts for ElevenLabs Eleven v3.
 Respond ONLY with valid JSON, no markdown, no explanations, in this exact shape:
 { "lines": [{ "text": "...", "emotion": "..." }, ...] }
-Each "text" is one spoken line of dialogue, with NO bracketed emotion tags inline (the emotion goes only in the "emotion" field).
-Each "emotion" MUST be exactly one of: ${MASCOT_EMOTIONS.join(', ')}.`,
+Each "text" is one spoken line of dialogue. Do NOT include emotion tags inside the text itself.
+Each "emotion" MUST be exactly one of: ${MASCOT_EMOTIONS.join(', ')}.
+Choose the emotion that best matches the tone of that spoken line — it will be injected as a [emotion] voice tag in ElevenLabs to shape the vocal delivery.`,
       user: `Generate the final spoken dialogue output based on this information, broken into short lines with one emotion per line.
 
 PRODUCT INFORMATION:
@@ -108,21 +111,23 @@ Output ONLY the JSON object described above.`,
       return res.status(502).json({ error: 'LLM no devolvió líneas de diálogo válidas' });
     }
 
-    // Si el LLM alucina una emoción fuera del set curado, cae a "curious".
+    // Si el LLM alucina una emoción fuera del set, cae a "curious".
     for (const line of lines) {
       if (!MASCOT_EMOTIONS.includes(line.emotion)) line.emotion = 'curious';
     }
 
-    // Unimos las líneas con un espacio simple para formar el texto completo que
-    // se manda a ElevenLabs. Guardamos el offset [start,end) de cada línea dentro
-    // de ese texto unido para luego mapearlo a character_start/end_times_seconds.
+    // Construir el texto completo para ElevenLabs:
+    // cada línea va prefijada con [emotion] para que EL module la voz.
+    // Los offsets apuntan al texto hablado (después del tag), no al tag mismo,
+    // para que el mapeo de character_start/end_times_seconds sea correcto.
     const JOINER = ' ';
     let fullText = '';
     const offsets = [];
     for (const line of lines) {
-      const start = fullText.length;
-      fullText += line.text;
-      offsets.push({ start, end: fullText.length });
+      const tag = `[${line.emotion}] `;
+      const textStart = fullText.length + tag.length;
+      fullText += tag + line.text;
+      offsets.push({ start: textStart, end: textStart + line.text.length });
       fullText += JOINER;
     }
 
@@ -141,7 +146,7 @@ Output ONLY the JSON object described above.`,
       const endIdx = Math.min(Math.max(end - 1, startIdx), lastIdx);
       return {
         text: line.text,
-        emotion: line.emotion,
+        emotion: line.emotion, // mismo tag en EL y en mascot (1:1)
         startSec: charStarts[startIdx] ?? 0,
         endSec: charEnds[endIdx] ?? charEnds[lastIdx] ?? 0,
       };
@@ -315,6 +320,26 @@ OUTPUT FORMAT:
       }
     }
     if (enforced > 0) console.log(`[${jobId}] Enforced rules on ${enforced} clip(s)`);
+
+    // 4b-pre. Corregir firebaseUrl con downloadUrl real de la sesión.
+    // El LLM a veces genera URLs sin token. Construir un índice clipId → downloadUrl
+    // desde los videos de la sesión para reemplazar cualquier URL mal formada.
+    const videoIndex = {};
+    for (const s of sessions) {
+      for (const v of (s.videos || [])) {
+        if (v.id && v.downloadUrl) videoIndex[v.id] = v.downloadUrl;
+      }
+    }
+    let urlFixed = 0;
+    for (const c of clips) {
+      const baseId = c.clipId?.replace(/_ext\d+$/, ''); // strip _ext1, _ext2 suffixes from filler copies
+      const realUrl = videoIndex[baseId];
+      if (realUrl && c.firebaseUrl !== realUrl) {
+        c.firebaseUrl = realUrl;
+        urlFixed++;
+      }
+    }
+    if (urlFixed > 0) console.log(`[${jobId}] Fixed ${urlFixed} firebaseUrl(s) con downloadUrl de sesión`);
 
     // Log every clip for traceability
     clips.forEach((c, i) => {

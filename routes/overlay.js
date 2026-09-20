@@ -82,6 +82,14 @@ router.post('/create', async (req, res) => {
         throw new Error(`overlay-server error ${overlayRes.status}: ${err.slice(0, 200)}`);
       }
 
+      // Leer headers de base overlay y mascotSegments antes de consumir el body
+      const baseOverlayUrl   = overlayRes.headers.get('x-base-overlay-url') || null;
+      const mascotSegsHeader = overlayRes.headers.get('x-mascot-segments')  || null;
+      let savedMascotSegments = null;
+      if (mascotSegsHeader) {
+        try { savedMascotSegments = JSON.parse(Buffer.from(mascotSegsHeader, 'base64').toString()); } catch {}
+      }
+
       const fileStream = createWriteStream(outPath);
       await pipeline(overlayRes.body, fileStream);
       console.log(`[${jobId}] Overlay rendered — uploading...`);
@@ -98,6 +106,8 @@ router.post('/create', async (req, res) => {
         productId: product?.id || null,
         productName: product?.name || null,
         projectId,
+        ...(baseOverlayUrl      && { baseOverlayUrl }),
+        ...(savedMascotSegments && { mascotSegments: savedMascotSegments }),
       });
 
       console.log(`[${jobId}] DONE`);
