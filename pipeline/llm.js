@@ -1,6 +1,6 @@
 import fetch from 'node-fetch';
 
-const MODEL = 'anthropic/claude-haiku-4.5';
+const MODEL = 'openai/o4-mini';
 const BASE_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
 export async function callLLM({ system, user, model = MODEL }) {
@@ -30,6 +30,10 @@ export async function callLLM({ system, user, model = MODEL }) {
 
 export async function callLLMJson({ system, user, model = MODEL }) {
   const raw = await callLLM({ system, user, model });
-  const cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/```\s*$/i, '').trim();
+  // Strip code fences first
+  let cleaned = raw.replace(/^```(?:json)?\n?/i, '').replace(/```\s*$/i, '').trim();
+  // If there's still non-JSON text around the object/array, extract just the JSON
+  const objMatch = cleaned.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+  if (objMatch) cleaned = objMatch[1];
   return JSON.parse(cleaned);
 }

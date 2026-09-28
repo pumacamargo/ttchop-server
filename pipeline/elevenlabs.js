@@ -5,6 +5,17 @@ import path from 'path';
 
 const BASE_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 
+// Fijado por Cacho el 26-sep-2026 tras comparar controles de audio (ver Telegram).
+// Nota: speed=0.5 está por debajo del mínimo documentado por ElevenLabs (0.7) —
+// la API no lo rechaza, pero probablemente lo clampea a 0.7 internamente sin avisar.
+const VOICE_SETTINGS = {
+  stability: 0.0,
+  style: 0,
+  similarity_boost: 0.0,
+  use_speaker_boost: true,
+  speed: 0.5,
+};
+
 export async function textToSpeech({ text, voiceId, outputPath }) {
   const res = await fetch(
     `${BASE_URL}/${voiceId}?output_format=mp3_44100_128`,
@@ -14,7 +25,7 @@ export async function textToSpeech({ text, voiceId, outputPath }) {
         'xi-api-key': process.env.ELEVENLABS_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ text, model_id: 'eleven_v3' }),
+      body: JSON.stringify({ text, model_id: 'eleven_v3', voice_settings: VOICE_SETTINGS }),
     }
   );
 
@@ -39,7 +50,7 @@ export async function textToSpeechWithTimestamps({ text, voiceId }) {
         'xi-api-key': process.env.ELEVENLABS_API_KEY,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ text, model_id: 'eleven_v3' }),
+      body: JSON.stringify({ text, model_id: 'eleven_v3', voice_settings: VOICE_SETTINGS }),
     }
   );
 

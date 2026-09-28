@@ -2,23 +2,23 @@ import { getBucket } from './firebase.js';
 import { v4 as uuidv4 } from 'uuid';
 
 export async function uploadToStorage(localPath, remoteFilename, projectId) {
-  const bucket = getBucket(projectId);
-  const destination = `collage/${remoteFilename}`;
+  return uploadFileToStorage(localPath, `collage/${remoteFilename}`, 'video/mp4', projectId);
+}
 
-  // Generar un download token para que la URL sea compatible con el SDK de Firebase
+// Igual que uploadToStorage pero con carpeta/contentType configurables — usado para
+// audio del personaje (character/), donde forzar video/mp4 y collage/ no aplica.
+export async function uploadFileToStorage(localPath, destination, contentType, projectId) {
+  const bucket = getBucket(projectId);
   const downloadToken = uuidv4();
 
   await bucket.upload(localPath, {
     destination,
     metadata: {
-      contentType: 'video/mp4',
-      metadata: {
-        firebaseStorageDownloadTokens: downloadToken,
-      },
+      contentType,
+      metadata: { firebaseStorageDownloadTokens: downloadToken },
     },
   });
 
-  // URL en formato firebasestorage.googleapis.com (compatible con CORS y la webapp)
   const encodedPath = encodeURIComponent(destination);
   return `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media&token=${downloadToken}`;
 }

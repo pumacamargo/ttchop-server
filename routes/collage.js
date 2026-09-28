@@ -42,7 +42,9 @@ router.post('/dialogue', async (req, res) => {
   try {
     const result = await callLLM({
       system: `You are an expert AI scriptwriter and audio prompt engineer specialized in creating high-quality spoken dialogue and voiceover scripts for ElevenLabs Eleven v3.
-Respond ONLY with the final dialogue text — no JSON, no markdown, no explanations.`,
+CRITICAL #1 — LANGUAGE: the spoken dialogue text itself (everything outside the [tag] markers) MUST be written entirely in the language given by DIALOGUE LANGUAGE below. This is non-negotiable — never default to English or any other language.
+CRITICAL #2 — TAGS: Eleven v3 needs inline audio tags to deliver an expressive, entertaining performance — flat text without tags sounds monotone and boring. Insert a tag in square brackets before each sentence or clause where the tone shifts, chosen from EXACTLY these values: ${MASCOT_EMOTIONS.join(', ')}. Use at least one tag every 1-2 sentences — never leave a long stretch of text untagged. The tags themselves stay in English (e.g. [excited]) regardless of the dialogue language.
+Respond ONLY with the final dialogue text (including the inline [tag] markers) — no JSON, no markdown, no explanations.`,
       user: `Generate the final spoken dialogue output based on this information.
 
 PRODUCT INFORMATION:
@@ -52,9 +54,9 @@ Description: ${product.description || ''}
 VIDEO/AUDIO TEMPLATE DESCRIPTION:
 ${collageTemplate.content}
 
-DIALOGUE LANGUAGE: ${language || 'spanish'}
+DIALOGUE LANGUAGE: ${language || 'spanish'} — write the spoken text in this language.
 
-Output ONLY the dialogue text, ready to be sent directly to ElevenLabs.`,
+Output ONLY the dialogue text with inline [emotion] tags, ready to be sent directly to ElevenLabs.`,
     });
 
     res.json({ dialogue: result.trim() });
@@ -66,7 +68,7 @@ Output ONLY the dialogue text, ready to be sent directly to ElevenLabs.`,
 // Emociones de mascot — alineadas 1:1 con los audio tags oficiales de ElevenLabs eleven_v3.
 // Se inyectan como [emotion] en el texto para afectar la entrega vocal Y seleccionar la pose.
 // Ref: https://elevenlabs.io/blog/v3-audiotags
-const MASCOT_EMOTIONS = ['happily', 'excited', 'surprised', 'sarcastically', 'annoyed', 'sighs', 'laughs', 'curious'];
+export const MASCOT_EMOTIONS = ['happily', 'excited', 'surprised', 'sarcastically', 'annoyed', 'sighs', 'laughs', 'curious'];
 
 // POST /collage/dialogue/structured
 // Body: { product: { name, description }, collageTemplate: { content }, language, voiceId }
@@ -159,14 +161,17 @@ Output ONLY the JSON object described above.`,
 });
 
 // POST /collage/create
-// Body: { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds?, needsOverlay?, audioBase64?, mascotSegments? }
+// Body: { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds?, needsOverlay?, needsCharacter?, audioBase64?, mascotSegments? }
 // needsOverlay: true → al terminar el collage, encola automáticamente un overlay job
+// needsCharacter: true → requiere needsOverlay=true también; al terminar el overlay,
+//   encadena /character/create (personaje animado con Rive) — collage → overlay → personaje.
 // audioBase64: opcional — si viene, se usa este audio tal cual (ya sintetizado, ej. por
 //   /collage/dialogue/structured) en vez de sintetizarlo de nuevo. Así el timing de
 //   mascotSegments coincide exactamente con el audio del video final.
 // mascotSegments: opcional — se propaga sin tocar hacia /overlay/create si needsOverlay.
 router.post('/create', async (req, res) => {
-  const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration, needsOverlay = false, audioBase64, mascotSegments } = req.body;
+  const { voiceId, dialogue, sessions, renderId, product, collageTemplate, language, audioDurationSeconds: clientAudioDuration, needsOverlay = false, needsCharacter = false, audioBase64, mascotSegments } = req.body;
+  const scriptTemplate = needsCharacter ? collageTemplate?.content : undefined;
   // projectId: a qué proyecto (ttchop / ttchop2) escribir. Ausente → default (ttchop).
   const { projectId } = req.body;
 
@@ -181,7 +186,10 @@ router.post('/create', async (req, res) => {
 
   console.log(`[${jobId}] Collage START | renderId: ${renderId} | projectId: ${projectId || 'default'}`);
 
-  // Create render doc immediately so it appears in the Renders tab right away
+  // Create render doc immediately so it appears in the Renders tab right away.
+  // inputs.collage: TODO lo necesario para volver a correr /collage/create solo con
+  // el renderId más adelante (o para que /overlay/create y /character/create lean
+  // product/language/voiceId/template si se disparan sueltos).
   await upsertRender({
     taskId: renderId,
     status: 'pending',
@@ -190,6 +198,9 @@ router.post('/create', async (req, res) => {
     productName: product?.name || null,
     userId: req.body.userId || null,
     projectId,
+    inputs: {
+      collage: { voiceId, dialogue, sessions, product, collageTemplate, language, mascotSegments, needsOverlay, needsCharacter },
+    },
   });
 
   // Respond immediately — pipeline runs in queue
@@ -402,17 +413,26 @@ OUTPUT FORMAT:
     console.log(`[${jobId}] Public URL: ${publicUrl}`);
 
     // 7. Update Firestore
+    // inputs.collage.videoUrl: la salida REAL del collage, guardada aparte del campo
+    // `videoUrl` de nivel superior — ese campo se sobreescribe con la salida de CADA
+    // etapa posterior (overlay, personaje), así que si /character/create se vuelve a
+    // disparar solo (resume con {renderId}) más adelante, tomar `existing.videoUrl`
+    // directo compondría el personaje sobre un video que YA tiene un personaje pegado
+    // encima en vez de sobre el collage original. Guardar la URL del collage aparte
+    // evita esa cascada.
+    const collageInputs = { voiceId, dialogue, sessions, product, collageTemplate, language, mascotSegments, needsOverlay, needsCharacter, videoUrl: publicUrl };
     if (needsOverlay) {
       // Collage done — mark as collage_done, overlay will update to done
       await upsertRender({
         taskId: renderId,
         status: 'collage_done',
         videoUrl: publicUrl,
-        type: 'collage+overlay',
+        type: needsCharacter ? 'collage+overlay+character' : 'collage+overlay',
         productId: product?.id || null,
         productName: product?.name || null,
         userId: req.body.userId || null,
         projectId,
+        inputs: { collage: collageInputs },
       });
       console.log(`[${jobId}] Collage done — enqueueing overlay...`);
       // Dispatch overlay job (reuses same renderId so webapp keeps polling)
@@ -420,7 +440,7 @@ OUTPUT FORMAT:
       fetch('http://localhost:3002/overlay/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true, projectId, mascotSegments }),
+        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromCollage: true, projectId, mascotSegments, needsCharacter, language, voiceId, scriptTemplate }),
       }).then(async r => {
         if (!r.ok) {
           const err = await r.text();
@@ -430,6 +450,34 @@ OUTPUT FORMAT:
       }).catch(async err => {
         console.error(`[${jobId}] Overlay dispatch threw:`, err.message);
         await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Overlay dispatch failed: ${err.message}`, projectId });
+      });
+    } else if (needsCharacter) {
+      // Sin overlay: collage → personaje directo, saltándose /overlay/create.
+      await upsertRender({
+        taskId: renderId,
+        status: 'collage_done',
+        videoUrl: publicUrl,
+        type: 'collage+character',
+        productId: product?.id || null,
+        productName: product?.name || null,
+        userId: req.body.userId || null,
+        projectId,
+        inputs: { collage: collageInputs },
+      });
+      console.log(`[${jobId}] Collage done — encadenando /character/create directo (sin overlay)...`);
+      fetch('http://localhost:3002/character/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ renderId, product, videoUrl: publicUrl, _fromOverlay: true, projectId, language, voiceId, scriptTemplate }),
+      }).then(async r => {
+        if (!r.ok) {
+          const err = await r.text();
+          console.error(`[${jobId}] Character dispatch error: ${err.slice(0, 200)}`);
+          await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Character dispatch failed: ${err.slice(0, 200)}`, projectId });
+        }
+      }).catch(async err => {
+        console.error(`[${jobId}] Character dispatch threw:`, err.message);
+        await upsertRender({ taskId: renderId, status: 'failed', errorMessage: `Character dispatch failed: ${err.message}`, projectId });
       });
     } else {
       await upsertRender({
@@ -441,6 +489,7 @@ OUTPUT FORMAT:
         productName: product?.name || null,
         userId: req.body.userId || null,
         projectId,
+        inputs: { collage: collageInputs },
       });
     }
 

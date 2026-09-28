@@ -4,6 +4,8 @@ import collageRoutes from './routes/collage.js';
 import aiRoutes from './routes/ai.js';
 import speedRampRoutes from './routes/speedramp.js';
 import overlayRoutes from './routes/overlay.js';
+import characterRoutes from './routes/character.js';
+import mixRoutes from './routes/mix.js';
 import { startScheduler } from './pipeline/scheduler.js';
 
 const app = express();
@@ -35,6 +37,8 @@ app.use('/collage', collageRoutes);
 app.use('/ai', aiRoutes);
 app.use('/speedramp', speedRampRoutes);
 app.use('/overlay', overlayRoutes);
+app.use('/character', characterRoutes);
+app.use('/mix', mixRoutes);
 
 app.get('/health', (_, res) => res.json({
   status: 'ok',
@@ -45,6 +49,8 @@ app.get('/health', (_, res) => res.json({
     'POST /ai/generate',
     'POST /ai/callback',
     'POST /speedramp/create',
+    'POST /character/create',
+    'POST /mix/create',
   ],
   uptime: process.uptime(),
 }));
