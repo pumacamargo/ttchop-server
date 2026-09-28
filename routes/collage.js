@@ -231,15 +231,17 @@ router.post('/create', async (req, res) => {
 Respond ONLY with valid JSON, no markdown, no explanations.`,
       user: `Generate an ffmpeg collage recipe with a 2-part structure.
 
-PRODUCT: ${JSON.stringify(product || {})}
+PRODUCT: ${JSON.stringify({ id: product?.id, name: product?.name, region: product?.region })}
 
 SESSIONS & CLIPS:
 ${JSON.stringify(sessions.map(s => ({
-  ...s,
-  videos: (s.videos || []).map(v => {
-    const { thumbnailUrl, ...rest } = v;
-    return rest;
-  })
+  id: s.id,
+  videos: (s.videos || []).map(v => ({
+    id: v.id,
+    duration: v.duration,
+    trimStart: v.trimStart ?? 0,
+    trimEnd: v.trimEnd ?? v.duration,
+  }))
 })))}
 
 COLLAGE TEMPLATE:
@@ -282,7 +284,7 @@ OUTPUT FORMAT:
       {
         "clipId": "...",
         "role": "hook|body",
-        "firebaseUrl": "...",
+        "firebaseUrl": "",
         "src": "",
         "trimStart": 0.0,
         "trimEnd": 3.0,
@@ -332,25 +334,36 @@ OUTPUT FORMAT:
     }
     if (enforced > 0) console.log(`[${jobId}] Enforced rules on ${enforced} clip(s)`);
 
-    // 4b-pre. Corregir firebaseUrl con downloadUrl real de la sesión.
-    // El LLM a veces genera URLs sin token. Construir un índice clipId → downloadUrl
-    // desde los videos de la sesión para reemplazar cualquier URL mal formada.
-    const videoIndex = {};
+    // 4b-pre. Corregir firebaseUrl y clampar trimEnd al duration real del video.
+    const videoIndex = {};   // clipId → { downloadUrl, duration }
     for (const s of sessions) {
       for (const v of (s.videos || [])) {
-        if (v.id && v.downloadUrl) videoIndex[v.id] = v.downloadUrl;
+        if (v.id) videoIndex[v.id] = { url: v.downloadUrl, duration: v.duration };
       }
     }
-    let urlFixed = 0;
+    let urlFixed = 0, trimFixed = 0;
     for (const c of clips) {
-      const baseId = c.clipId?.replace(/_ext\d+$/, ''); // strip _ext1, _ext2 suffixes from filler copies
-      const realUrl = videoIndex[baseId];
-      if (realUrl && c.firebaseUrl !== realUrl) {
-        c.firebaseUrl = realUrl;
-        urlFixed++;
+      const baseId = c.clipId?.replace(/_ext\d+$/, '');
+      const meta = videoIndex[baseId];
+      if (!meta) continue;
+      if (meta.url && c.firebaseUrl !== meta.url) { c.firebaseUrl = meta.url; urlFixed++; }
+      // Clampar trimEnd al duration real — el LLM a veces genera trimEnd > duration
+      if (meta.duration && c.trimEnd > meta.duration) {
+        const outBefore = clipOutSecs(c);
+        c.trimEnd = meta.duration;
+        // Reajustar trimStart para mantener la duración de output, si es posible
+        const available = c.trimEnd - c.trimStart;
+        const needed = outBefore * (c.speed || 1);
+        if (needed > available) {
+          // No hay suficiente footage: ajustar trimStart hacia atrás o aceptar clip más corto
+          c.trimStart = Math.max(0, c.trimEnd - needed);
+        }
+        console.log(`[${jobId}] FIX trimEnd: ${c.clipId} trimEnd clamped to ${c.trimEnd.toFixed(2)}s (duration=${meta.duration})`);
+        trimFixed++;
       }
     }
-    if (urlFixed > 0) console.log(`[${jobId}] Fixed ${urlFixed} firebaseUrl(s) con downloadUrl de sesión`);
+    if (urlFixed > 0) console.log(`[${jobId}] Fixed ${urlFixed} firebaseUrl(s)`);
+    if (trimFixed > 0) console.log(`[${jobId}] Fixed ${trimFixed} trimEnd(s) fuera de rango`);
 
     // Log every clip for traceability
     clips.forEach((c, i) => {

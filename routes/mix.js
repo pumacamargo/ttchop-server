@@ -19,14 +19,36 @@ async function ensureTempDir() {
 }
 
 // Detecta silencios en el audio. Devuelve [{start, end}].
-async function detectSilences(audioPath, noiseDb = -35, minDur = 0.1) {
-  const { stderr } = await execAsync(
-    `ffmpeg -i "${audioPath}" -af "silencedetect=noise=${noiseDb}dB:duration=${minDur}" -f null - 2>&1`,
-    { timeout: 30000 }
-  );
-  const starts = [...stderr.matchAll(/silence_start: ([\d.]+)/g)].map(m => parseFloat(m[1]));
-  const ends   = [...stderr.matchAll(/silence_end: ([\d.]+)/g)].map(m => parseFloat(m[1]));
+// ffmpeg escribe silencedetect a stderr; no usar 2>&1 para que llegue correctamente.
+async function detectSilences(audioPath, noiseDb = -35, minDur = 0.05) {
+  let output = '';
+  try {
+    const r = await execAsync(
+      `ffmpeg -i "${audioPath}" -af "silencedetect=noise=${noiseDb}dB:duration=${minDur}" -f null -`,
+      { timeout: 30000 }
+    );
+    output = r.stderr || r.stdout || '';
+  } catch (e) {
+    output = e.stderr || e.stdout || '';
+  }
+  const starts = [...output.matchAll(/silence_start: ([\d.]+)/g)].map(m => parseFloat(m[1]));
+  const ends   = [...output.matchAll(/silence_end: ([\d.]+)/g)].map(m => parseFloat(m[1]));
   return starts.map((s, i) => ({ start: s, end: ends[i] ?? Infinity }));
+}
+
+// Detecta transientes: momentos donde el audio SUBE sobre -18dB (inicio de sílaba fuerte).
+async function detectLoudTransients(audioPath) {
+  let output = '';
+  try {
+    const r = await execAsync(
+      `ffmpeg -i "${audioPath}" -af "silencedetect=noise=-18dB:duration=0.02" -f null -`,
+      { timeout: 30000 }
+    );
+    output = r.stderr || r.stdout || '';
+  } catch (e) {
+    output = e.stderr || e.stdout || '';
+  }
+  return [...output.matchAll(/silence_end: ([\d.]+)/g)].map(m => parseFloat(m[1]));
 }
 
 // Devuelve true si el timestamp cae durante habla activa (no en silencio).
@@ -34,36 +56,55 @@ function isSpeech(t, silences) {
   return !silences.some(s => t >= s.start && t <= (s.end ?? Infinity));
 }
 
-// Dado el script con timestamps y los silencios detectados, calcula los
-// puntos de corte para que:
-//  - Ningún segmento dure más de maxSecs
-//  - Cada corte cae durante habla activa (no en silencio)
-//  - Los límites de línea se usan como puntos de corte naturales
-function calculateCutPoints(script, totalDuration, silences, maxSecs) {
+// Detecta cambios de escena en el video (cortes entre clips del collage).
+// Devuelve array de timestamps donde hay un cut visual.
+async function detectSceneCuts(videoPath, threshold = 0.25) {
+  let output = '';
+  try {
+    const r = await execAsync(
+      `ffmpeg -i "${videoPath}" -vf "select='gt(scene,${threshold})',showinfo" -vsync vfr -f null -`,
+      { timeout: 120000 }
+    );
+    output = r.stderr || r.stdout || '';
+  } catch (e) {
+    output = e.stderr || e.stdout || '';
+  }
+  // showinfo imprime "pts_time:X" por cada frame seleccionado
+  const timestamps = [...output.matchAll(/pts_time:([\d.]+)/g)].map(m => parseFloat(m[1]));
+  // Dedup por si hay frames consecutivos muy juntos (<0.1s)
+  return timestamps.filter((t, i) => i === 0 || t - timestamps[i - 1] > 0.1);
+}
+
+// Dado un tiempo propuesto t, busca el transiente más cercano dentro de ±windowSec.
+// transients: array de timestamps (floats) de inicio de habla fuerte.
+function snapToTransient(t, transients, windowSec = 0.5) {
+  const nearby = transients.filter(ts => ts >= t - windowSec && ts <= t + windowSec);
+  if (nearby.length === 0) return t;
+  return nearby.reduce((best, ts) => Math.abs(ts - t) < Math.abs(best - t) ? ts : best, nearby[0]);
+}
+
+// Calcula puntos de corte anclados a transientes de audio (inicio de habla fuerte),
+// que es donde el volumen SUBE — los cortes más enérgicos y naturales.
+function calculateCutPoints(script, totalDuration, silences, transients, maxSecs) {
   const cuts = new Set([0, totalDuration]);
 
   for (const line of script) {
     const { startSec, endSec } = line;
 
-    // El final de cada línea es un corte natural.
-    // Si cae en silencio, retroceder al inicio del silencio (última habla).
-    let lineEnd = endSec;
-    const silAtEnd = silences.find(s => lineEnd > s.start && lineEnd <= (s.end ?? Infinity));
-    if (silAtEnd) lineEnd = silAtEnd.start;
-    if (lineEnd > 0.5 && lineEnd < totalDuration - 0.2) cuts.add(parseFloat(lineEnd.toFixed(3)));
+    // Corte natural al final de cada línea, anclado al transiente más cercano.
+    const t = snapToTransient(endSec, transients);
+    if (t > 0.5 && t < totalDuration - 0.2) cuts.add(parseFloat(t.toFixed(3)));
 
     // Si la línea es más larga que maxSecs, insertar cortes intermedios.
     const dur = endSec - startSec;
     if (dur > maxSecs) {
-      let t = startSec + maxSecs;
-      while (t < endSec - 0.5) {
-        // Si t cae en silencio, avanzar al próximo inicio de habla.
-        const silAt = silences.find(s => t >= s.start && t <= (s.end ?? Infinity));
-        const cutT = silAt ? silAt.end : t;
-        if (cutT < endSec - 0.3 && isSpeech(cutT, silences)) {
-          cuts.add(parseFloat(cutT.toFixed(3)));
+      let cursor = startSec + maxSecs;
+      while (cursor < endSec - 0.5) {
+        const snapped = snapToTransient(cursor, transients);
+        if (snapped > 0.5 && snapped < totalDuration - 0.2) {
+          cuts.add(parseFloat(snapped.toFixed(3)));
         }
-        t = cutT + maxSecs;
+        cursor = snapped + maxSecs;
       }
     }
   }
@@ -111,24 +152,42 @@ router.post('/create', async (req, res) => {
         videoPaths.push(p);
       }
 
-      // 3. Extraer audio del primer video para detectar silencios
+      // 3. Extraer audio y detectar escenas del primer video (collage)
       const audioPath = `${TEMP_DIR}/mix_audio_${jobId}.wav`;
       await execAsync(`ffmpeg -v error -y -i "${videoPaths[0]}" -vn "${audioPath}"`, { timeout: 60000 });
-      const silences = await detectSilences(audioPath);
-      console.log(`[${jobId}] Silencios detectados: ${silences.length}`);
+      const [silences, transients, sceneCuts] = await Promise.all([
+        detectSilences(audioPath),
+        detectLoudTransients(audioPath),
+        detectSceneCuts(videoPaths[0]),
+      ]);
+      console.log(`[${jobId}] Transientes: ${transients.length} | Scene cuts collage: ${sceneCuts.length} → ${sceneCuts.map(t=>t.toFixed(2)).join(', ')}`);
 
-      // 4. Calcular puntos de corte
-      const cutPoints = calculateCutPoints(script, totalDuration, silences, maxSegmentSeconds);
-      console.log(`[${jobId}] Puntos de corte: ${cutPoints.join(', ')}`);
+      // 4. Calcular puntos de corte basados en audio y luego jalarlos al
+      //    scene cut del collage más cercano (si hay uno dentro de ±1.2s).
+      //    Así el switch de video siempre cae sobre un corte que ya existía en el collage.
+      const SCENE_SNAP_WINDOW = 1.2; // segundos de margen para buscar un scene cut cercano
+      let rawCuts = calculateCutPoints(script, totalDuration, silences, transients, maxSegmentSeconds);
+      const cutPoints = rawCuts.map(t => {
+        if (t === 0 || t === totalDuration) return t;
+        const nearby = sceneCuts.filter(s => Math.abs(s - t) <= SCENE_SNAP_WINDOW);
+        if (nearby.length === 0) return t; // sin scene cut cercano, mantener el original
+        // El scene cut más cercano al tiempo propuesto
+        const snapped = nearby.reduce((best, s) => Math.abs(s - t) < Math.abs(best - t) ? s : best, nearby[0]);
+        return parseFloat(snapped.toFixed(3));
+      });
+      // Eliminar duplicados que pudieran surgir si dos cuts se jalan al mismo scene cut
+      const uniqueCuts = [...new Set(cutPoints)].sort((a, b) => a - b);
+      console.log(`[${jobId}] Cortes (raw): ${rawCuts.join(', ')}`);
+      console.log(`[${jobId}] Cortes (snapped a scene): ${uniqueCuts.join(', ')}`);
 
       // 5. Construir filter_complex ciclando entre los videos
       const n = videoPaths.length;
       const filterParts = [];
       const segLabels = [];
 
-      for (let i = 0; i < cutPoints.length - 1; i++) {
-        const start = cutPoints[i];
-        const end   = cutPoints[i + 1];
+      for (let i = 0; i < uniqueCuts.length - 1; i++) {
+        const start = uniqueCuts[i];
+        const end   = uniqueCuts[i + 1];
         const videoIdx = (startIndex + i) % n;
         const label = `s${i}`;
         filterParts.push(`[${videoIdx}:v]trim=start=${start}:end=${end},setpts=PTS-STARTPTS[${label}]`);
@@ -136,6 +195,7 @@ router.post('/create', async (req, res) => {
       }
 
       const concatFilter = `${segLabels.join('')}concat=n=${segLabels.length}:v=1:a=0[vout]`;
+      // (uniqueCuts used above, cutPoints alias kept for Firestore save below)
       filterParts.push(concatFilter);
       const filterComplex = filterParts.join(';');
 
@@ -166,7 +226,7 @@ router.post('/create', async (req, res) => {
         videoUrl: publicUrl,
         type: 'mix',
         projectId,
-        inputs: { mix: { videoUrls, maxSegmentSeconds, startIndex, cutPoints } },
+        inputs: { mix: { videoUrls, maxSegmentSeconds, startIndex, cutPoints: uniqueCuts, sceneCuts } },
       });
 
       console.log(`[${jobId}] DONE — ${publicUrl}`);
