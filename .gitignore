@@ -3,3 +3,10 @@ node_modules/
 firebase-service-account.json
 *.mp4
 *.mp3
+
+# Temporary debug/monitor scripts
+tmp_*.mjs
+monitor_*.mjs
+query_session.mjs
+vn_t*.mjs
+bin/
