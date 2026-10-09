@@ -295,6 +295,14 @@ OUTPUT FORMAT:
 }`,
     });
 
+    // 3b. Force the real audio/output paths — the LLM is only asked to echo these
+    // back verbatim, and occasionally substitutes its own filename (e.g. derived
+    // from product.id) instead. That produced a recipe pointing at an audio file
+    // that was never written, failing collage_builder.py with "Audio file not
+    // found" even though TTS succeeded (TTC-39).
+    recipe.ffmpegRecipe.meta = { ...recipe.ffmpegRecipe.meta, outputPath };
+    recipe.ffmpegRecipe.audio = { ...recipe.ffmpegRecipe.audio, src: audioPath };
+
     // 4. Validate recipe rules and auto-correct
     const clips = recipe.ffmpegRecipe.clips;
     const clipOutSecs = (c) => (c.trimEnd - c.trimStart) / (c.speed || 1);
