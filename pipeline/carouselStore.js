@@ -26,6 +26,15 @@ export async function getCarousel(projectId, carouselId) {
   return snap.exists ? { id: snap.id, ...snap.data() } : null;
 }
 
+// Lee un carousel_script/carousel_style por id de la colección `templates` (plan
+// TTC-55 §4: "El server lee los templates por id y guarda un snapshot" — Fase 3).
+// Misma colección que usa webapp2, mismo proyecto que el carrusel (projectId).
+export async function getTemplateById(projectId, templateId) {
+  const db = getDb(projectId);
+  const snap = await db.collection('templates').doc(templateId).get();
+  return snap.exists ? { id: snap.id, ...snap.data() } : null;
+}
+
 // callbackToken nunca se manda al cliente (regla no negociable del plan TTC-55 §4).
 export function toPublicCarousel(carousel) {
   if (!carousel) return null;

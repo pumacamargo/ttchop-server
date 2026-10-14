@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { callLLMJson } from '../pipeline/llm.js';
 import { IMAGE_MODEL_IDS } from '../pipeline/kieai.js';
 import {
-  newCarouselId, newCallbackToken, createCarousel, getCarousel, updateCarousel, toPublicCarousel,
+  newCarouselId, newCallbackToken, createCarousel, getCarousel, updateCarousel, toPublicCarousel, getTemplateById,
 } from '../pipeline/carouselStore.js';
 import { submitImageBatches, resolveKieTask, triggerComposition } from '../pipeline/carouselImages.js';
 
@@ -77,7 +77,8 @@ Respond with JSON exactly like:
 
 router.post('/create', async (req, res) => {
   const {
-    userId, projectId, accountId, script, scriptTemplate, styleTemplate,
+    userId, projectId, accountId, script,
+    scriptTemplate: inlineScriptTemplate, styleTemplate: inlineStyleTemplate,
     scriptTemplateId, styleTemplateId, language, imageModel = 'seedream-v4',
     slideCount, dryRun, autoApprove,
   } = req.body;
@@ -89,11 +90,27 @@ router.post('/create', async (req, res) => {
   if (!LANGUAGES.includes(language)) return res.status(400).json({ error: `language debe ser uno de: ${LANGUAGES.join(', ')}` });
   if (!IMAGE_MODEL_IDS.includes(imageModel)) return res.status(400).json({ error: `imageModel debe ser uno de: ${IMAGE_MODEL_IDS.join(', ')}` });
 
-  if (scriptTemplateId || styleTemplateId) {
-    return res.status(400).json({ error: 'scriptTemplateId/styleTemplateId aún no se leen de Firestore (llegan en la Fase 3). Por ahora manda scriptTemplate/styleTemplate inline en el body.' });
+  let scriptTemplate = inlineScriptTemplate;
+  let styleTemplate = inlineStyleTemplate;
+
+  try {
+    // Fase 3 (TTC-55 §4): "El server lee los templates por id y guarda un snapshot".
+    // scriptTemplateId/styleTemplateId tienen prioridad sobre el inline si ambos llegan.
+    if (scriptTemplateId) {
+      scriptTemplate = await getTemplateById(projectId, scriptTemplateId);
+      if (!scriptTemplate) return res.status(404).json({ error: `scriptTemplateId ${scriptTemplateId} no encontrado en el proyecto ${projectId}` });
+    }
+    if (styleTemplateId) {
+      styleTemplate = await getTemplateById(projectId, styleTemplateId);
+      if (!styleTemplate) return res.status(404).json({ error: `styleTemplateId ${styleTemplateId} no encontrado en el proyecto ${projectId}` });
+    }
+  } catch (err) {
+    console.error('[carousel] /create error leyendo templates por id:', err.message);
+    return res.status(500).json({ error: err.message });
   }
-  if (!scriptTemplate?.content) return res.status(400).json({ error: 'scriptTemplate.content es requerido' });
-  if (!styleTemplate?.visualBible) return res.status(400).json({ error: 'styleTemplate.visualBible es requerido' });
+
+  if (!scriptTemplate?.content) return res.status(400).json({ error: 'scriptTemplate.content es requerido (inline o vía scriptTemplateId)' });
+  if (!styleTemplate?.visualBible) return res.status(400).json({ error: 'styleTemplate.visualBible es requerido (inline o vía styleTemplateId)' });
 
   const finalSlideCount = clampSlideCount(slideCount, scriptTemplate);
   const carouselId = newCarouselId();
