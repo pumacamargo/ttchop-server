@@ -1,9 +1,55 @@
 import { getDb, getConfiguredProjects } from './firebase.js';
 import { upsertRender } from './firestore.js';
+import { resolveKieTask } from './carouselImages.js';
 import fetch from 'node-fetch';
 
 const SERVER_URL = 'http://localhost:3002';
 const TICK_MS    = 60_000; // every 60 seconds
+
+// ── Carousel sweep (TTC-56, red de seguridad del plan TTC-55 §1/§7) ─────────────
+// Si el callback de kie.ai nunca llega, recordInfo recupera el resultado solo.
+// Un carrusel que lleva más de 30 min en generating_images se marca failed en vez
+// de quedarse colgado para siempre.
+const CAROUSEL_STALE_MS   = 5 * 60 * 1000;  // reintenta un slot "pending" sin callback
+const CAROUSEL_TIMEOUT_MS = 30 * 60 * 1000; // falla el carrusel completo
+
+async function sweepCarousels(projectId) {
+  const db = getDb(projectId);
+  const snap = await db.collection('carousels').where('status', '==', 'generating_images').get();
+  if (snap.empty) return;
+
+  const now = Date.now();
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data();
+    const createdMs = Date.parse(data.createdAt);
+    if (Number.isFinite(createdMs) && now - createdMs > CAROUSEL_TIMEOUT_MS) {
+      console.warn(`[scheduler] [carousel-sweep] [${projectId}] ${docSnap.id} timeout > 30min — marcando failed`);
+      await docSnap.ref.set({ status: 'failed', errorMessage: 'Timeout: generating_images > 30 min', updatedAt: new Date().toISOString() }, { merge: true });
+      continue;
+    }
+
+    const staleTasks = new Map(); // taskId -> slot
+    for (const s of data.slides || []) {
+      if (s.bg?.status === 'pending' && s.bg?.startedAt) {
+        const startedMs = Date.parse(s.bg.startedAt);
+        if (Number.isFinite(startedMs) && now - startedMs > CAROUSEL_STALE_MS) {
+          const taskId = s.bg.taskId;
+          const slot = data.kieTasks?.[taskId] ?? String(s.index);
+          staleTasks.set(taskId, slot);
+        }
+      }
+    }
+
+    for (const [taskId, slot] of staleTasks) {
+      try {
+        console.log(`[scheduler] [carousel-sweep] [${projectId}] ${docSnap.id} recuperando taskId ${taskId} (slot=${slot})`);
+        await resolveKieTask({ projectId, carouselId: docSnap.id, taskId, slot });
+      } catch (err) {
+        console.error(`[scheduler] [carousel-sweep] [${projectId}] ${docSnap.id} taskId ${taskId}:`, err.message);
+      }
+    }
+  }
+}
 
 // ── Mascot helpers (feature opt-in vía job.mascotEnabled — ver executeJob) ──────
 // Mismo formato de doc id que containerDocId() en ttchop2/src/services/databaseService.ts.
@@ -132,6 +178,11 @@ async function tick() {
 async function tickProject(projectId) {
   const db  = getDb(projectId);
   const now = new Date().toISOString();
+
+  // Un fallo en el sweep de carruseles no debe impedir que corra el resto del tick.
+  await sweepCarousels(projectId).catch(err => {
+    console.error(`[scheduler] [carousel-sweep] [${projectId}] tick error:`, err.message);
+  });
 
   // Single-field query (no composite index needed); filter scheduledAt in JS
   const snap = await db.collection('scheduled_renders')
