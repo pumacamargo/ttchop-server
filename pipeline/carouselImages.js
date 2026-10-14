@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
+import AdmZip from 'adm-zip';
 import { generateImage, getTaskRecord, maxBatchForModel, creditsPerImageForModel } from './kieai.js';
 import { uploadFileToStorage } from './storage.js';
 import { getCarousel, updateCarousel, completeBackgroundTask, failBackgroundTask } from './carouselStore.js';
@@ -198,25 +199,52 @@ export async function triggerComposition({ projectId, carouselId }) {
       const err = await res.text();
       throw new Error(`ttchop-post /carousel/render-slides error ${res.status}: ${err.slice(0, 300)}`);
     }
-    const data = await res.json();
-    await handleComposed({ projectId, carouselId, data });
+
+    // ttchop-post devuelve un ZIP binario (slide_{index}.png por cada slide) — NO
+    // sube a Storage por sí mismo, porque no sabe a qué proyecto (ttchop/ttchop2)
+    // pertenece el carrusel. ttchop-server desempaqueta y sube cada archivo con el
+    // mismo uploadFileToStorage(projectId) ya probado en la Fase 1.
+    const zipBuffer = Buffer.from(await res.arrayBuffer());
+    if (!existsSync(TMP_DIR)) mkdirSync(TMP_DIR, { recursive: true });
+    const zipPath = path.join(TMP_DIR, `${carouselId}_package.zip`);
+    writeFileSync(zipPath, zipBuffer);
+
+    const zip = new AdmZip(zipPath);
+    const files = [];
+    for (const entry of zip.getEntries()) {
+      const match = entry.entryName.match(/^slide_(\d+)\.png$/);
+      if (!match) continue;
+      const index = Number(match[1]);
+      const localPath = path.join(TMP_DIR, `${carouselId}_${entry.entryName}`);
+      writeFileSync(localPath, entry.getData());
+      const storagePath = `carousels/${carouselId}/final/slide_${index}.png`;
+      const url = await uploadFileToStorage(localPath, storagePath, 'image/png', projectId);
+      files.push({ index, url, storagePath });
+      try { unlinkSync(localPath); } catch {}
+    }
+
+    const zipStoragePath = `carousels/${carouselId}/package.zip`;
+    const packageZipUrl = await uploadFileToStorage(zipPath, zipStoragePath, 'application/zip', projectId);
+    try { unlinkSync(zipPath); } catch {}
+
+    await handleComposed({ projectId, carouselId, files, packageZipUrl });
   } catch (err) {
     console.error(`[carousel] [${carouselId}] composición falló (reintentable con /regenerate what=compose):`, err.message);
     await updateCarousel(projectId, carouselId, { errorMessage: `Composición pendiente: ${err.message}` });
   }
 }
 
-async function handleComposed({ projectId, carouselId, data }) {
+async function handleComposed({ projectId, carouselId, files, packageZipUrl }) {
   const carousel = await getCarousel(projectId, carouselId);
   if (!carousel) return;
   const slides = carousel.slides.map(s => {
-    const file = (data.files || []).find(f => f.index === s.index);
-    return file ? { ...s, final: { url: file.url, storagePath: file.storagePath || null } } : s;
+    const file = files.find(f => f.index === s.index);
+    return file ? { ...s, final: { url: file.url, storagePath: file.storagePath } } : s;
   });
   await updateCarousel(projectId, carouselId, {
     slides,
     status: 'ready',
-    packageZipUrl: data.packageZipUrl || null,
+    packageZipUrl: packageZipUrl || null,
     errorMessage: null,
   });
 }
