@@ -122,6 +122,14 @@ const IMAGE_MODELS = {
       return { prompt, image_size: 'portrait_16_9' };
     },
   },
+  'nano-banana-2-lite': {
+    model: 'nano-banana-2-lite',
+    creditsPerImage: 0, // precio pendiente de confirmar con la API
+    maxBatch: 1,
+    buildInput({ prompt }) {
+      return { prompt, image_size: 'portrait_16_9' };
+    },
+  },
 };
 
 export const IMAGE_MODEL_IDS = Object.keys(IMAGE_MODELS);
