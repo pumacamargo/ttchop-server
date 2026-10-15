@@ -98,7 +98,7 @@ export function backgroundTaskSlots(carousel, taskId, slot) {
   return { ok: true, targets };
 }
 
-// Asset writes, bg.assetId and composition transition commit in one transaction.
+// Background completion and composition transition commit in one transaction.
 export async function completeBackgroundTask(projectId, carouselId, { taskId, slot, urls, storagePaths }, options = {}) {
   // getDb silently falls back to ttchop on an unknown project: never request it here.
   if (projectId !== 'ttchop2') throw new Error('Carousel assets require project ttchop2');
@@ -129,24 +129,9 @@ export async function completeBackgroundTask(projectId, carouselId, { taskId, sl
         attempts: (slides[i].bg?.attempts || 0) + 1,
       };
     });
-    const complete = { ...data, id: carouselId, projectId, slides };
-    const records = planCarouselAssetIngestion(complete, taskId);
-    // A partially complete batch may include previously successful members.
-    if (records.length !== targets.filter(i => slides[i].bg?.status === 'done').length) {
-      throw new Error('Missing completed background asset attribution');
-    }
-    const missing = records.filter(record => !slides.find(s => s.index === record.sourceSlideIndex).bg.assetId);
-    if (missing.length) await stageCarouselAssetWrites(tx, db, missing);
-    let repaired = false;
-    for (const record of records) {
-      const bg = slides.find(s => s.index === record.sourceSlideIndex).bg;
-      const id = carouselAssetDocumentId(record);
-      if (bg.assetId && bg.assetId !== id) throw new Error('Carousel asset identity conflict');
-      if (!bg.assetId) { bg.assetId = id; repaired = true; }
-    }
     const allDone = slides.every(s => s.bg?.status === 'done');
     const startedComposing = !alreadyDone && allDone && data.status === 'generating_images';
-    if (!alreadyDone || repaired) {
+    if (!alreadyDone) {
       const update = { slides, updatedAt: new Date().toISOString() };
       if (startedComposing) update.status = 'composing';
       tx.set(ref, update, { merge: true });

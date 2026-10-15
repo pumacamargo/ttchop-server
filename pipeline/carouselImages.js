@@ -126,7 +126,7 @@ export async function resolveKieTask({ projectId, carouselId, taskId, slot }, op
   if (!checked.ok) return { ok: true, failed: false, startedComposing: false, result: checked };
   const relevant = checked.targets.map(i => existing.slides[i]);
   if (relevant.every(s => s.bg?.status === 'done')) {
-    // Legacy completion: create the asset and attach its ID from the saved URL/path.
+    // Legacy completion: preserve the already-persisted background as-is.
     const result = await completeBackgroundTask(projectId, carouselId, { taskId, slot, urls: [], storagePaths: [] }, dbOptions);
     return { ok: true, failed: false, startedComposing: false, result };
   }
