@@ -54,6 +54,8 @@ app.get('/health', (_, res) => res.json({
     'POST /character/create',
     'POST /mix/create',
     'POST /carousel/create',
+    'GET /carousel',
+    'DELETE /carousel/:id',
     'POST /carousel/:id/approve-text',
     'POST /carousel/callback',
     'POST /carousel/:id/regenerate',

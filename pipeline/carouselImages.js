@@ -162,7 +162,7 @@ export async function resolveKieTask({ projectId, carouselId, taskId, slot }, op
   const result = await completeBackgroundTask(projectId, carouselId, { taskId, slot, urls: uploadedUrls, storagePaths }, dbOptions);
   if (result.startedComposing) {
     compose({ projectId, carouselId }).catch(err => {
-      console.error(`[carousel] [${carouselId}] triggerComposition error:`, err.message);
+      console.error(`[carousel] [${carouselId}] triggerComposition failed`);
     });
   }
   return { ok: true, failed: false, startedComposing: !!result.startedComposing, result };
@@ -220,8 +220,8 @@ export async function triggerComposition({ projectId, carouselId }) {
 
     await handleComposed({ projectId, carouselId, files, packageZipUrl });
   } catch (err) {
-    console.error(`[carousel] [${carouselId}] composición falló (reintentable con /regenerate what=compose):`, err.message);
-    await updateCarousel(projectId, carouselId, { errorMessage: `Composición pendiente: ${err.message}` });
+    console.error(`[carousel] [${carouselId}] composición falló (reintentable con /regenerate what=compose)`);
+    await updateCarousel(projectId, carouselId, { errorMessage: 'Composición pendiente' });
   }
 }
 
