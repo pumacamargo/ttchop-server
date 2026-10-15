@@ -17,7 +17,7 @@ function validateRecord(record) {
   if (record.accountId != null && typeof record.accountId !== 'string') throw new Error('Invalid carousel asset accountId');
 }
 
-function documentId(record) {
+export function carouselAssetDocumentId(record) {
   const identity = [record.projectId, record.userId, normalizeAccountId(record.accountId), record.sourceCarouselId, record.sourceTaskId, record.sourceSlideIndex];
   return `carousel_${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
@@ -34,7 +34,7 @@ export async function stageCarouselAssetWrites(tx, db, records) {
     if (scope && !isDeepStrictEqual(scope, currentScope)) throw new Error('Carousel asset records must share one scope');
     scope ??= currentScope;
     const value = { ...record, accountId: normalizedAccountId };
-    const id = documentId(value);
+    const id = carouselAssetDocumentId(value);
     if (unique.has(id) && !isDeepStrictEqual(unique.get(id).value, value)) throw new Error('Carousel asset identity conflict within batch');
     unique.set(id, { value });
   }

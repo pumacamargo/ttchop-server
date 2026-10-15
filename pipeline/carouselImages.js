@@ -1,10 +1,12 @@
 import fetch from 'node-fetch';
+import { getConfiguredProjects } from './firebase.js';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import AdmZip from 'adm-zip';
 import { generateImage, getTaskRecord, maxBatchForModel, creditsPerImageForModel } from './kieai.js';
 import { uploadFileToStorage } from './storage.js';
-import { getCarousel, updateCarousel, completeBackgroundTask, failBackgroundTask, recordSubmittedImageTasks } from './carouselStore.js';
+import { getCarousel, updateCarousel, completeBackgroundTask, failBackgroundTask, recordSubmittedImageTasks, backgroundTaskSlots } from './carouselStore.js';
 
 const TMP_DIR = '/tmp/ttchop_carousel';
 
@@ -109,54 +111,57 @@ function extractResultUrls(record) {
 // HTTP (routes/carousel.js) como por el sweep (pipeline/scheduler.js); la escritura
 // final en Firestore es la misma transacción idempotente en los dos casos, así que
 // nunca se duplican entre sí aunque ambos caminos corran para la misma tarea.
-export async function resolveKieTask({ projectId, carouselId, taskId, slot }) {
-  // Short-circuit antes de pegarle a kie.ai o re-descargar nada: si un callback
-  // duplicado (kie reintenta) o el sweep ya encontraron este taskId resuelto, no
-  // hay nada que hacer. Evita re-descargar/re-subir imágenes a Storage en cada
-  // reintento — la idempotencia de completeBackgroundTask ya cubre la corrección,
-  // esto solo evita el trabajo de red redundante.
-  const existing = await getCarousel(projectId, carouselId);
-  if (existing) {
-    const relevant = existing.slides.filter(s => s.bg?.taskId === taskId);
-    if (relevant.length > 0 && relevant.every(s => s.bg?.status === 'done')) {
-      return { ok: true, failed: false, startedComposing: false, result: { ok: true, alreadyDone: true, allDone: existing.slides.every(s => s.bg?.status === 'done') } };
+export async function resolveKieTask({ projectId, carouselId, taskId, slot }, options = {}) {
+  if (projectId !== 'ttchop2') throw new Error('Carousel assets require project ttchop2');
+  if (!options.db && !getConfiguredProjects().includes(projectId)) throw new Error('Missing ttchop2 Firebase credentials');
+  const readCarousel = options.getCarousel || getCarousel;
+  const readTask = options.getTaskRecord || getTaskRecord;
+  const download = options.downloadToTmp || downloadToTmp;
+  const upload = options.uploadFileToStorage || uploadFileToStorage;
+  const compose = options.triggerComposition || triggerComposition;
+  const dbOptions = options.db ? { db: options.db } : {};
+  const existing = await readCarousel(projectId, carouselId);
+  if (!existing) return { ok: true, failed: false, startedComposing: false, result: { ok: false, reason: 'not_found' } };
+  const checked = backgroundTaskSlots(existing, taskId, slot);
+  if (!checked.ok) return { ok: true, failed: false, startedComposing: false, result: checked };
+  const relevant = checked.targets.map(i => existing.slides[i]);
+  if (relevant.every(s => s.bg?.status === 'done')) {
+    // Legacy completion: create the asset and attach its ID from the saved URL/path.
+    const result = await completeBackgroundTask(projectId, carouselId, { taskId, slot, urls: [], storagePaths: [] }, dbOptions);
+    return { ok: true, failed: false, startedComposing: false, result };
+  }
+
+  const record = await readTask(taskId);
+  const state = record?.data?.state;
+  if (state === 'fail') {
+    const failMsg = record?.data?.failMsg || 'kie.ai image generation failed';
+    const result = await failBackgroundTask(projectId, carouselId, { taskId, slot, errorMessage: failMsg }, dbOptions);
+    return { ok: true, failed: true, startedComposing: false, result };
+  }
+  if (state !== 'success') return { ok: true, pending: true, startedComposing: false };
+
+  const resultUrls = extractResultUrls(record);
+  if (resultUrls.length !== checked.targets.length || resultUrls.some(u => typeof u !== 'string' || !u.trim())) {
+    return { ok: true, failed: false, startedComposing: false, result: { ok: false, reason: 'result_count_mismatch' } };
+  }
+  // URLs are assigned to attribution slots in submission order (never slide array order).
+  const digest = createHash('sha256').update(taskId).digest('hex');
+  const uploadedUrls = [], storagePaths = [];
+  for (let i = 0; i < resultUrls.length; i++) {
+    const index = existing.slides[checked.targets[i]].index;
+    const localPath = await download(resultUrls[i], `${carouselId}_${digest}_${index}.png`);
+    const storagePath = `carousels/${carouselId}/bg/${digest}/${index}.png`;
+    try {
+      uploadedUrls.push(await upload(localPath, storagePath, 'image/png', projectId));
+      storagePaths.push(storagePath);
+    } finally {
+      if (!options.downloadToTmp) try { unlinkSync(localPath); } catch {}
     }
   }
 
-  const record = await getTaskRecord(taskId);
-  const state = record?.data?.state;
-
-  if (state === 'fail') {
-    const failMsg = record?.data?.failMsg || 'kie.ai image generation failed';
-    const result = await failBackgroundTask(projectId, carouselId, { taskId, slot, errorMessage: failMsg });
-    return { ok: true, failed: true, startedComposing: false, result };
-  }
-
-  if (state !== 'success') {
-    // Todavía procesando (o estado desconocido) — no hacer nada, el sweep reintenta.
-    return { ok: true, pending: true, startedComposing: false };
-  }
-
-  const resultUrls = extractResultUrls(record);
-  if (resultUrls.length === 0) {
-    const result = await failBackgroundTask(projectId, carouselId, { taskId, slot, errorMessage: 'kie.ai success sin resultUrls' });
-    return { ok: true, failed: true, startedComposing: false, result };
-  }
-
-  const uploadedUrls = [];
-  const storagePaths = [];
-  for (let i = 0; i < resultUrls.length; i++) {
-    const localPath = await downloadToTmp(resultUrls[i], `${carouselId}_${taskId}_${i}.png`);
-    const storagePath = `carousels/${carouselId}/bg_${slot === 'batch' ? `batch_${taskId}_${i}` : slot}.png`;
-    const firebaseUrl = await uploadFileToStorage(localPath, storagePath, 'image/png', projectId);
-    uploadedUrls.push(firebaseUrl);
-    storagePaths.push(storagePath);
-    try { unlinkSync(localPath); } catch {}
-  }
-
-  const result = await completeBackgroundTask(projectId, carouselId, { taskId, slot, urls: uploadedUrls, storagePaths });
+  const result = await completeBackgroundTask(projectId, carouselId, { taskId, slot, urls: uploadedUrls, storagePaths }, dbOptions);
   if (result.startedComposing) {
-    triggerComposition({ projectId, carouselId }).catch(err => {
+    compose({ projectId, carouselId }).catch(err => {
       console.error(`[carousel] [${carouselId}] triggerComposition error:`, err.message);
     });
   }
