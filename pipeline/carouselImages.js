@@ -4,7 +4,7 @@ import path from 'path';
 import AdmZip from 'adm-zip';
 import { generateImage, getTaskRecord, maxBatchForModel, creditsPerImageForModel } from './kieai.js';
 import { uploadFileToStorage } from './storage.js';
-import { getCarousel, updateCarousel, completeBackgroundTask, failBackgroundTask } from './carouselStore.js';
+import { getCarousel, updateCarousel, completeBackgroundTask, failBackgroundTask, recordSubmittedImageTasks } from './carouselStore.js';
 
 const TMP_DIR = '/tmp/ttchop_carousel';
 
@@ -32,7 +32,7 @@ export function buildBatches(slides, maxBatch) {
 // Para batches >1, Seedream solo respeta max_images si el conteo también está
 // explícito en el prompt (confirmado en el spike de la Fase 0, ver comentario en
 // TTC-56) — por eso se enumera "Image N: ..." por slide dentro del mismo prompt.
-function buildBatchPrompt(batch, styleTemplate) {
+export function buildBatchPrompt(batch, styleTemplate) {
   const visualBible = styleTemplate.visualBible || '';
   const negative = styleTemplate.negative || DEFAULT_NEGATIVE;
 
@@ -58,9 +58,7 @@ export async function submitImageBatches({ projectId, carouselId, carousel, targ
   const slidesToSubmit = targetSlides || carousel.slides;
   const batches = buildBatches(slidesToSubmit, maxBatch);
 
-  const kieTasks = {};
-  const bgUpdates = {};
-  let creditsEstimate = 0;
+  const submissions = [];
 
   for (const batch of batches) {
     const n = batch.length;
@@ -72,25 +70,13 @@ export async function submitImageBatches({ projectId, carouselId, carousel, targ
     const taskId = res?.data?.taskId;
     if (!taskId) throw new Error(`kie.ai no devolvió taskId para un lote de ${n} slide(s)`);
 
-    kieTasks[taskId] = slotParam;
-    creditsEstimate += creditsPerImageForModel(imageModel) * n;
-
     const startedAt = new Date().toISOString();
-    for (const s of batch) {
-      bgUpdates[s.index] = { taskId, status: 'pending', attempts: (s.bg?.attempts || 0) + 1, startedAt };
-    }
+    submissions.push({ taskId, slot: slotParam, slots: batch.map(s => s.index), prompt,
+      imagePrompts: batch.map(s => ({ index: s.index, imagePrompt: s.imagePrompt })), creditsEstimate: creditsPerImageForModel(imageModel) * n,
+      slideUpdates: batch.map(s => ({ index: s.index, bg: { taskId, status: 'pending', attempts: (s.bg?.attempts || 0) + 1, startedAt } })) });
   }
 
-  const fullCarousel = await getCarousel(projectId, carouselId);
-  const slides = fullCarousel.slides.map(s => (bgUpdates[s.index] ? { ...s, bg: bgUpdates[s.index] } : s));
-
-  await updateCarousel(projectId, carouselId, {
-    slides,
-    kieTasks: { ...(fullCarousel.kieTasks || {}), ...kieTasks },
-    cost: { ...(fullCarousel.cost || {}), credits: (fullCarousel.cost?.credits || 0) + creditsEstimate },
-  });
-
-  return { kieTasks, creditsEstimate };
+  return recordSubmittedImageTasks(projectId, carouselId, submissions);
 }
 
 async function downloadToTmp(url, filename) {

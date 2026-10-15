@@ -42,6 +42,35 @@ export function toPublicCarousel(carousel) {
   return rest;
 }
 
+export async function recordSubmittedImageTasks(projectId, carouselId, submissions, { db = getDb(projectId) } = {}) {
+  const ref = db.collection(COLLECTION).doc(carouselId);
+  return db.runTransaction(async tx => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) throw new Error(`Carousel ${carouselId} not found`);
+    const data = snap.data();
+    const tasks = { ...(data.kieTasks || {}) }, prompts = { ...(data.imageTaskPrompts || {}) };
+    const slides = (data.slides || []).map(s => ({ ...s }));
+    let credits = 0;
+    let changed = false;
+    for (const item of submissions) {
+      const prior = prompts[item.taskId];
+      if (prior !== undefined && (typeof prior !== 'object' || prior.prompt !== item.prompt || prior.slot !== item.slot || JSON.stringify(prior.slots) !== JSON.stringify(item.slots) || JSON.stringify(prior.imagePrompts) !== JSON.stringify(item.imagePrompts))) throw new Error(`Conflicting attribution for image task ${item.taskId}`);
+      if (tasks[item.taskId] !== undefined && tasks[item.taskId] !== item.slot) throw new Error(`Conflicting slot for image task ${item.taskId}`);
+      const fresh = prior === undefined;
+      if (fresh) {
+        prompts[item.taskId] = { taskId: item.taskId, slot: item.slot, slots: [...item.slots], prompt: item.prompt, imagePrompts: item.imagePrompts.map(p => ({ ...p })), submittedAt: new Date().toISOString() };
+        changed = true;
+      }
+      tasks[item.taskId] = item.slot;
+      if (!fresh) continue;
+      credits += item.creditsEstimate;
+      for (const u of item.slideUpdates) { const i = slides.findIndex(s => s.index === u.index); if (i >= 0 && slides[i].bg?.taskId !== item.taskId) slides[i].bg = u.bg; }
+    }
+    if (changed) tx.set(ref, { slides, kieTasks: tasks, imageTaskPrompts: prompts, cost: { ...(data.cost || {}), credits: (data.cost?.credits || 0) + credits }, updatedAt: new Date().toISOString() }, { merge: true });
+    return { kieTasks: tasks, creditsEstimate: credits };
+  });
+}
+
 export async function updateCarousel(projectId, carouselId, patch) {
   const db = getDb(projectId);
   await db.collection(COLLECTION).doc(carouselId).set({ ...patch, updatedAt: new Date().toISOString() }, { merge: true });
