@@ -94,6 +94,17 @@ test('asset conflict aborts transaction without writing carousel', async () => {
   assert.deepEqual([...db.docs], before); assert.equal(db.commits, 0);
 });
 
+test('failed Kie task does not persist untrusted text containing callback secret', async () => {
+  const db = fakeDb(c([s(0, 't')], 't', '0'));
+  const result = await resolveKieTask({ projectId: 'ttchop2', carouselId: 'c', taskId: 't', slot: '0' }, {
+    db, getCarousel: async () => db.data,
+    getTaskRecord: async () => ({ data: { state: 'fail', failMsg: 'callback?t=SECRET_CALLBACK_TOKEN' } }),
+  });
+  assert.equal(result.failed, true);
+  assert.equal(db.data.slides[0].bg.status, 'failed');
+  assert.doesNotMatch(JSON.stringify(db.data), /SECRET_CALLBACK_TOKEN/);
+});
+
 test('failure callback displaced after preflight remains read-only in transaction', async () => {
   const db = fakeDb(c([s(0, 't'), s(1, 't')], 't', 'batch', [0, 1]));
   const result = await resolveKieTask({ projectId: 'ttchop2', carouselId: 'c', taskId: 't', slot: 'batch' }, {

@@ -134,7 +134,8 @@ export async function resolveKieTask({ projectId, carouselId, taskId, slot }, op
   const record = await readTask(taskId);
   const state = record?.data?.state;
   if (state === 'fail') {
-    const failMsg = record?.data?.failMsg || 'kie.ai image generation failed';
+    // Upstream error text is untrusted and may echo the callback URL/token.
+    const failMsg = 'kie.ai image generation failed';
     const result = await failBackgroundTask(projectId, carouselId, { taskId, slot, errorMessage: failMsg }, dbOptions);
     return { ok: true, failed: true, startedComposing: false, result };
   }
