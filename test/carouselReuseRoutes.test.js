@@ -7,7 +7,7 @@ const source = (id, accountId = null) => ({ id, projectId: 'ttchop2', userId: 'a
 async function setup(t, { matcher } = {}) {
   const calls = [], docs = new Map(), candidates = [source('candidate'), source('other-account', 'shop')];
   const deps = {
-    verifyToken: async token => ({ uid: token }), configuredProjects: () => ['ttchop2'],
+    configuredProjects: () => ['ttchop2'],
     getCarousel: async (p, id) => docs.get(id), listCarousels: async (p, uid) => { calls.push(['list', p, uid]); return [...docs.values(), ...candidates]; },
     createCarousel: async (p, c) => { c.createdAt = 2; docs.set(c.id, c); },
     updateCarousel: async (p, id, patch) => docs.set(id, { ...docs.get(id), ...patch }),
@@ -20,7 +20,7 @@ async function setup(t, { matcher } = {}) {
   };
   const app = express(); app.use(express.json()); app.use('/carousel', createCarouselRouter(deps));
   const server = app.listen(0); t.after(() => server.close());
-  const request = async (method, path, body) => { const r = await fetch(`http://127.0.0.1:${server.address().port}/carousel${path}`, { method, headers: { Authorization: 'Bearer alice', 'Content-Type': 'application/json' }, ...(method === 'GET' ? {} : { body: JSON.stringify(body) }) }); return { status: r.status, body: await r.json() }; };
+  const request = async (method, path, body) => { const r = await fetch(`http://127.0.0.1:${server.address().port}/carousel${path}`, { method, headers: { 'Content-Type': 'application/json' }, ...(method === 'GET' ? {} : { body: JSON.stringify({ userId: 'alice', ...body }) }) }); return { status: r.status, body: await r.json() }; };
   return { request, calls, docs };
 }
 const inline = { projectId: 'ttchop2', script: 'script', language: 'es', scriptTemplate: { content: 'structure' }, styleTemplate: { visualBible: 'style' }, reuseBackgrounds: true };
