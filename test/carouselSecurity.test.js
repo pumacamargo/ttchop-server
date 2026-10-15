@@ -111,3 +111,21 @@ test('owned general routes and delete work, callback stays token-gated without F
   assert.equal((await request('POST','/callback?c=car1&p=ttchop2&slot=0&t=secret','',{taskId:'task'})).status, 200);
   assert.equal((await request('DELETE','/car1','alice',{projectId:'ttchop2'})).status, 200);
 });
+
+test("create stores reuseBackgrounds false by default", async t => {
+ const { request, docs } = await fixture(t);
+ const r = await request("POST", "/create", "alice", create);
+ assert.equal(r.status, 200);
+ assert.equal(docs.get(r.body.carouselId).reuseBackgrounds, false);
+});
+test('default slide generator uses injected callLLMJson', async t => {
+  let calls = 0;
+  const { request } = await fixture(t, { generateSlides: undefined, callLLMJson: async () => {
+    calls++;
+    return { slides: [{ index: 0, role: 'hook', text: 'hola', imagePrompt: 'photo' }], caption: 'caption', hashtags: [] };
+  }});
+  const response = await request('POST', '/create', 'alice', { ...create, dryRun: true });
+  assert.equal(response.status, 200);
+  assert.equal(calls, 1);
+  assert.equal(response.body.carousel.slides[0].text, 'hola');
+});

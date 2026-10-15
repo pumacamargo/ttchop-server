@@ -3,6 +3,7 @@ import { getAuth } from 'firebase-admin/auth';
 import { getCarouselAuthApp, getConfiguredProjects, getDb } from '../pipeline/firebase.js';
 import { callLLMJson as defaultCallLLMJson } from '../pipeline/llm.js';
 import { IMAGE_MODEL_IDS } from '../pipeline/kieai.js';
+import { matchCarouselBackgrounds } from '../pipeline/carouselReuse.js';
 import {
   newCarouselId, newCallbackToken, createCarousel as defaultCreateCarousel, getCarousel as defaultGetCarousel, updateCarousel as defaultUpdateCarousel, toPublicCarousel, getTemplateById as defaultGetTemplateById,
 } from '../pipeline/carouselStore.js';
@@ -22,7 +23,9 @@ const {
     return snap.exists ? snap.data() : null;
   },
   deleteCarousel = async (projectId, id) => getDb(projectId).collection('carousels').doc(id).delete(),
-  generateSlides = generateSlidesAndCaption,
+  callLLMJson = defaultCallLLMJson,
+  generateSlides = args => generateSlidesAndCaption({ ...args, callLLMJson }),
+  matchBackgrounds = matchCarouselBackgrounds,
   listCarousels = async (projectId, userId) => {
     const snap = await getDb(projectId).collection('carousels').where('userId', '==', userId).get();
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -76,7 +79,7 @@ function clampSlideCount(requested, scriptTemplate) {
 // explícitamente en el prompt del LLM Y otra vez al armar el prompt final de kie
 // (pipeline/carouselImages.js:buildBatchPrompt) — doble refuerzo porque el LLM no
 // siempre obedece instrucciones de "nunca pidas texto en la imagen" al pie de la letra.
-async function generateSlidesAndCaption({ script, scriptTemplate, styleTemplate, language, slideCount }) {
+async function generateSlidesAndCaption({ script, scriptTemplate, styleTemplate, language, slideCount, callLLMJson }) {
   const negative = styleTemplate.negative || DEFAULT_NEGATIVE;
   const roles = scriptTemplate.roles?.length
     ? scriptTemplate.roles
@@ -122,12 +125,31 @@ Respond with JSON exactly like:
   return result;
 }
 
+async function advanceApproved({ projectId, carouselId, carousel }) {
+  let current = carousel;
+  if (current.reuseBackgrounds === true) {
+    const candidates = (await listCarousels(projectId, current.userId)).filter(c => c.id !== current.id && sameAccount(c.accountId, current.accountId));
+    const result = await matchBackgrounds({ targetCarousel: current, targetSlides: current.slides, trustedCandidates: candidates, callLLMJson, getCarousel });
+    const matched = new Map(result.matches.map(m => [m.targetSlideIndex, m]));
+    const slides = current.slides.map(slide => {
+      const match = matched.get(slide.index);
+      return match ? { ...slide, bg: { status: 'done', url: match.url, storagePath: match.storagePath } } : slide;
+    });
+    await updateCarousel(projectId, carouselId, { slides });
+    current = { ...current, slides };
+    const unmatched = new Set(result.unmatchedSlideIndices);
+    if (!unmatched.size) return triggerComposition({ projectId, carouselId });
+    return submitImageBatches({ projectId, carouselId, carousel: current, targetSlides: slides.filter(s => unmatched.has(s.index)) });
+  }
+  return submitImageBatches({ projectId, carouselId, carousel: current });
+}
+
 router.post('/create', async (req, res) => {
   const {
     projectId, accountId, script,
     scriptTemplate: inlineScriptTemplate, styleTemplate: inlineStyleTemplate,
     scriptTemplateId, styleTemplateId, language, imageModel = 'seedream-v4',
-    slideCount, dryRun, autoApprove,
+    slideCount, dryRun, autoApprove, reuseBackgrounds = false,
   } = req.body;
 
   const userId = req.userId;
@@ -192,6 +214,7 @@ router.post('/create', async (req, res) => {
       script,
       language,
       imageModel,
+      reuseBackgrounds: reuseBackgrounds === true,
       scriptTemplate: { id: scriptTemplateId || null, title: scriptTemplate.title || null, snapshot: scriptTemplate },
       styleTemplate: { id: styleTemplateId || null, title: styleTemplate.title || null, snapshot: styleTemplate },
       seed: Math.floor(Math.random() * 1_000_000),
@@ -210,7 +233,7 @@ router.post('/create', async (req, res) => {
     if (!dryRun && autoApprove) {
       await updateCarousel(projectId, carouselId, { status: 'generating_images' });
       const fresh = await getCarousel(projectId, carouselId);
-      await submitImageBatches({ projectId, carouselId, carousel: fresh });
+      await advanceApproved({ projectId, carouselId, carousel: fresh });
     }
 
     const final = await getCarousel(projectId, carouselId);
@@ -244,7 +267,7 @@ router.post('/:id/approve-text', async (req, res) => {
 
     await updateCarousel(projectId, id, { slides, caption, status: 'generating_images' });
     const fresh = await getCarousel(projectId, id);
-    await submitImageBatches({ projectId, carouselId: id, carousel: fresh });
+    await advanceApproved({ projectId, carouselId: id, carousel: fresh });
 
     const final = await getCarousel(projectId, id);
     res.json({ carousel: toPublicCarousel(final) });
