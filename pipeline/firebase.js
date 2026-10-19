@@ -47,6 +47,7 @@ function initProject(projectId) {
   const app = existing || initializeApp(
     {
       credential,
+      ...(projectId === 'ttchop2' ? { projectId: 'ttchop2' } : {}),
       storageBucket: process.env[keys.storageBucket],
     },
     projectId,
@@ -111,3 +112,10 @@ export function ensureFirebase() {
 
 // Re-exportado por si algo necesita la app cruda de firebase-admin.
 export { getAdminApp };
+
+export function getCarouselAuthApp() {
+  if (!getConfiguredProjects().includes('ttchop2')) throw new Error('ttchop2 not configured');
+  const app = getApp('ttchop2');
+  if (app.name !== 'ttchop2' || app.options.projectId !== 'ttchop2' || app.options.credential?.projectId !== 'ttchop2') throw new Error('ttchop2 app mismatch');
+  return app;
+}

@@ -45,7 +45,7 @@ async function sweepCarousels(projectId) {
         console.log(`[scheduler] [carousel-sweep] [${projectId}] ${docSnap.id} recuperando taskId ${taskId} (slot=${slot})`);
         await resolveKieTask({ projectId, carouselId: docSnap.id, taskId, slot });
       } catch (err) {
-        console.error(`[scheduler] [carousel-sweep] [${projectId}] ${docSnap.id} taskId ${taskId}:`, err.message);
+        console.error(`[scheduler] [carousel-sweep] [${projectId}] task failed`);
       }
     }
   }
@@ -181,7 +181,7 @@ async function tickProject(projectId) {
 
   // Un fallo en el sweep de carruseles no debe impedir que corra el resto del tick.
   await sweepCarousels(projectId).catch(err => {
-    console.error(`[scheduler] [carousel-sweep] [${projectId}] tick error:`, err.message);
+    console.error(`[scheduler] [carousel-sweep] [${projectId}] tick failed`);
   });
 
   // Single-field query (no composite index needed); filter scheduledAt in JS

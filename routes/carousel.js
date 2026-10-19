@@ -1,12 +1,62 @@
 import { Router } from 'express';
-import { callLLMJson } from '../pipeline/llm.js';
+import { getConfiguredProjects, getDb, getCarouselAuthApp } from '../pipeline/firebase.js';
+import { getAuth } from 'firebase-admin/auth';
+import { callLLMJson as defaultCallLLMJson } from '../pipeline/llm.js';
 import { IMAGE_MODEL_IDS } from '../pipeline/kieai.js';
+import { matchCarouselBackgrounds } from '../pipeline/carouselReuse.js';
 import {
-  newCarouselId, newCallbackToken, createCarousel, getCarousel, updateCarousel, toPublicCarousel, getTemplateById,
+  newCarouselId, newCallbackToken, createCarousel as defaultCreateCarousel, getCarousel as defaultGetCarousel, updateCarousel as defaultUpdateCarousel, toPublicCarousel, getTemplateById as defaultGetTemplateById,
 } from '../pipeline/carouselStore.js';
-import { submitImageBatches, resolveKieTask, triggerComposition } from '../pipeline/carouselImages.js';
+import { submitImageBatches as defaultSubmitImageBatches, resolveKieTask as defaultResolveKieTask, triggerComposition as defaultTriggerComposition } from '../pipeline/carouselImages.js';
 
+export function createCarouselRouter(deps = {}) {
 const router = Router();
+const {
+  verifyIdToken = async token => getAuth(getCarouselAuthApp()).verifyIdToken(token),
+  getCarousel = defaultGetCarousel, createCarousel = defaultCreateCarousel,
+  updateCarousel = defaultUpdateCarousel, getTemplateById = defaultGetTemplateById,
+  submitImageBatches = defaultSubmitImageBatches, resolveKieTask = defaultResolveKieTask,
+  triggerComposition = defaultTriggerComposition, configuredProjects = getConfiguredProjects,
+  getAccount = async (projectId, id) => {
+    const snap = await getDb(projectId).collection('tiktok_accounts').doc(id).get();
+    return snap.exists ? snap.data() : null;
+  },
+  deleteCarousel = async (projectId, id) => getDb(projectId).collection('carousels').doc(id).delete(),
+  callLLMJson = defaultCallLLMJson,
+  generateSlides = args => generateSlidesAndCaption({ ...args, callLLMJson }),
+  matchBackgrounds = matchCarouselBackgrounds,
+  listCarousels = async (projectId, userId) => {
+    const snap = await getDb(projectId).collection('carousels').where('userId', '==', userId).get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  },
+} = deps;
+
+function project(req) { return req.method === 'GET' ? req.query.projectId : req.body?.projectId; }
+function account(req) { return req.method === 'GET' ? req.query.accountId : req.body?.accountId; }
+function general(id) { return id === undefined || id === null || id === ''; }
+function sameAccount(a, b) { return general(a) ? general(b) : a === b; }
+function owned(doc, req) {
+  return doc?.projectId === 'ttchop2' && doc?.userId === req.userId && sameAccount(doc.accountId, account(req));
+}
+async function requireOwned(req, res) {
+  const doc = await getCarousel('ttchop2', req.params.id);
+  if (!owned(doc, req)) { res.status(404).json({ error: 'Carrusel no encontrado' }); return null; }
+  return doc;
+}
+router.use(async (req, res, next) => {
+  if (req.path === '/callback' && req.method === 'POST') return next();
+  const authorization = req.get('authorization') || '';
+  const match = authorization.match(/^Bearer (.+)$/i);
+  if (!match) return res.status(401).json({ error: 'Autenticación requerida' });
+  try {
+    const decoded = await verifyIdToken(match[1]);
+    if (typeof decoded?.uid !== 'string' || !decoded.uid) return res.status(401).json({ error: 'Token inválido' });
+    req.userId = decoded.uid;
+  } catch { return res.status(401).json({ error: 'Token inválido' }); }
+  if (project(req) !== 'ttchop2') return res.status(400).json({ error: 'projectId debe ser ttchop2' });
+  if (!configuredProjects().includes('ttchop2')) return res.status(503).json({ error: 'ttchop2 no configurado' });
+  next();
+});
 
 const LANGUAGES = ['es', 'en', 'ja'];
 const DEFAULT_NEGATIVE =
@@ -29,7 +79,7 @@ function clampSlideCount(requested, scriptTemplate) {
 // explícitamente en el prompt del LLM Y otra vez al armar el prompt final de kie
 // (pipeline/carouselImages.js:buildBatchPrompt) — doble refuerzo porque el LLM no
 // siempre obedece instrucciones de "nunca pidas texto en la imagen" al pie de la letra.
-async function generateSlidesAndCaption({ script, scriptTemplate, styleTemplate, language, slideCount }) {
+async function generateSlidesAndCaption({ script, scriptTemplate, styleTemplate, language, slideCount, callLLMJson }) {
   const negative = styleTemplate.negative || DEFAULT_NEGATIVE;
   const roles = scriptTemplate.roles?.length
     ? scriptTemplate.roles
@@ -75,15 +125,42 @@ Respond with JSON exactly like:
   return result;
 }
 
+async function advanceApproved({ projectId, carouselId, carousel }) {
+  let current = carousel;
+  if (current.reuseBackgrounds === true) {
+    const candidates = (await listCarousels(projectId, current.userId)).filter(c => c.id !== current.id && sameAccount(c.accountId, current.accountId));
+    const result = await matchBackgrounds({ targetCarousel: current, targetSlides: current.slides, trustedCandidates: candidates, callLLMJson, getCarousel });
+    const matched = new Map(result.matches.map(m => [m.targetSlideIndex, m]));
+    const slides = current.slides.map(slide => {
+      const match = matched.get(slide.index);
+      return match ? { ...slide, bg: { status: 'done', url: match.url, storagePath: match.storagePath } } : slide;
+    });
+    await updateCarousel(projectId, carouselId, { slides });
+    current = { ...current, slides };
+    const unmatched = new Set(result.unmatchedSlideIndices);
+    if (!unmatched.size) return triggerComposition({ projectId, carouselId });
+    return submitImageBatches({ projectId, carouselId, carousel: current, targetSlides: slides.filter(s => unmatched.has(s.index)) });
+  }
+  return submitImageBatches({ projectId, carouselId, carousel: current });
+}
+
 router.post('/create', async (req, res) => {
   const {
-    userId, projectId, accountId, script,
+    projectId, accountId, script,
     scriptTemplate: inlineScriptTemplate, styleTemplate: inlineStyleTemplate,
     scriptTemplateId, styleTemplateId, language, imageModel = 'seedream-v4',
-    slideCount, dryRun, autoApprove,
+    slideCount, dryRun, autoApprove, reuseBackgrounds = false,
   } = req.body;
 
-  if (!userId) return res.status(400).json({ error: 'userId es requerido' });
+  const userId = req.userId;
+  if (!general(accountId)) {
+    try {
+      const linked = await getAccount(projectId, `${userId}_${accountId}`);
+      if (linked?.userId !== userId || linked?.openId !== accountId) return res.status(403).json({ error: 'Cuenta no autorizada' });
+    } catch {
+      return res.status(500).json({ error: 'Error verificando cuenta' });
+    }
+  }
   // projectId SIEMPRE explícito — nunca se infiere por default (plan TTC-55 §0.2, regla no negociable del issue).
   if (!projectId) return res.status(400).json({ error: 'projectId es requerido' });
   if (!script) return res.status(400).json({ error: 'script es requerido' });
@@ -98,15 +175,15 @@ router.post('/create', async (req, res) => {
     // scriptTemplateId/styleTemplateId tienen prioridad sobre el inline si ambos llegan.
     if (scriptTemplateId) {
       scriptTemplate = await getTemplateById(projectId, scriptTemplateId);
-      if (!scriptTemplate) return res.status(404).json({ error: `scriptTemplateId ${scriptTemplateId} no encontrado en el proyecto ${projectId}` });
+      if (scriptTemplate?.userId !== userId || scriptTemplate?.type !== 'carousel_script' || (!general(scriptTemplate.accountId) && !sameAccount(scriptTemplate.accountId, accountId))) return res.status(404).json({ error: 'Script template no encontrado' });
     }
     if (styleTemplateId) {
       styleTemplate = await getTemplateById(projectId, styleTemplateId);
-      if (!styleTemplate) return res.status(404).json({ error: `styleTemplateId ${styleTemplateId} no encontrado en el proyecto ${projectId}` });
+      if (styleTemplate?.userId !== userId || styleTemplate?.type !== 'carousel_style' || (!general(styleTemplate.accountId) && !sameAccount(styleTemplate.accountId, accountId))) return res.status(404).json({ error: 'Style template no encontrado' });
     }
   } catch (err) {
-    console.error('[carousel] /create error leyendo templates por id:', err.message);
-    return res.status(500).json({ error: err.message });
+    console.error('[carousel] operation failed');
+    return res.status(500).json({ error: 'Error procesando carrusel' });
   }
 
   if (!scriptTemplate?.content) return res.status(400).json({ error: 'scriptTemplate.content es requerido (inline o vía scriptTemplateId)' });
@@ -116,7 +193,7 @@ router.post('/create', async (req, res) => {
   const carouselId = newCarouselId();
 
   try {
-    const { slides: rawSlides, caption, hashtags } = await generateSlidesAndCaption({
+    const { slides: rawSlides, caption, hashtags } = await generateSlides({
       script, scriptTemplate, styleTemplate, language, slideCount: finalSlideCount,
     });
 
@@ -137,6 +214,7 @@ router.post('/create', async (req, res) => {
       script,
       language,
       imageModel,
+      reuseBackgrounds: reuseBackgrounds === true,
       scriptTemplate: { id: scriptTemplateId || null, title: scriptTemplate.title || null, snapshot: scriptTemplate },
       styleTemplate: { id: styleTemplateId || null, title: styleTemplate.title || null, snapshot: styleTemplate },
       seed: Math.floor(Math.random() * 1_000_000),
@@ -155,14 +233,14 @@ router.post('/create', async (req, res) => {
     if (!dryRun && autoApprove) {
       await updateCarousel(projectId, carouselId, { status: 'generating_images' });
       const fresh = await getCarousel(projectId, carouselId);
-      await submitImageBatches({ projectId, carouselId, carousel: fresh });
+      await advanceApproved({ projectId, carouselId, carousel: fresh });
     }
 
     const final = await getCarousel(projectId, carouselId);
     res.json({ carouselId, carousel: toPublicCarousel(final) });
   } catch (err) {
-    console.error('[carousel] /create error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[carousel] operation failed');
+    res.status(500).json({ error: 'Error procesando carrusel' });
   }
 });
 
@@ -172,8 +250,8 @@ router.post('/:id/approve-text', async (req, res) => {
   if (!projectId) return res.status(400).json({ error: 'projectId es requerido' });
 
   try {
-    const carousel = await getCarousel(projectId, id);
-    if (!carousel) return res.status(404).json({ error: 'Carrusel no encontrado' });
+    const carousel = await requireOwned(req, res);
+    if (!carousel) return;
     if (carousel.status !== 'text_review') {
       return res.status(409).json({ error: `El carrusel está en status "${carousel.status}", no en text_review` });
     }
@@ -189,13 +267,13 @@ router.post('/:id/approve-text', async (req, res) => {
 
     await updateCarousel(projectId, id, { slides, caption, status: 'generating_images' });
     const fresh = await getCarousel(projectId, id);
-    await submitImageBatches({ projectId, carouselId: id, carousel: fresh });
+    await advanceApproved({ projectId, carouselId: id, carousel: fresh });
 
     const final = await getCarousel(projectId, id);
     res.json({ carousel: toPublicCarousel(final) });
   } catch (err) {
-    console.error('[carousel] /approve-text error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[carousel] operation failed');
+    res.status(500).json({ error: 'Error procesando carrusel' });
   }
 });
 
@@ -207,18 +285,19 @@ router.post('/:id/approve-text', async (req, res) => {
 router.post('/callback', async (req, res) => {
   const { c: carouselId, p: projectId, slot, t: token } = req.query;
   try {
-    if (!carouselId || !projectId || !token) {
-      console.warn('[carousel/callback] faltan query params', req.query);
+    if (projectId !== 'ttchop2' || !configuredProjects().includes('ttchop2')) return res.status(400).json({ error: 'invalid_project' });
+    if (!carouselId || !token) {
+      console.warn('[carousel/callback] faltan query params', { hasCarouselId: Boolean(carouselId), projectId: typeof projectId === 'string' ? projectId : null, hasToken: Boolean(token) });
       return res.status(400).json({ error: 'c, p y t son requeridos' });
     }
 
     const carousel = await getCarousel(projectId, carouselId);
-    if (!carousel) {
-      console.warn(`[carousel/callback] carrusel no encontrado: ${carouselId} (proyecto ${projectId})`);
+    if (!carousel || carousel.projectId !== projectId) {
+      console.warn('[carousel/callback] carrusel no encontrado');
       return res.status(404).json({ error: 'not_found' });
     }
-    if (carousel.callbackToken !== token) {
-      console.warn(`[carousel/callback] token inválido para ${carouselId}`);
+    if (typeof token !== 'string' || carousel.callbackToken !== token) {
+      console.warn('[carousel/callback] token inválido');
       return res.status(401).json({ error: 'invalid_token' });
     }
 
@@ -226,10 +305,10 @@ router.post('/callback', async (req, res) => {
     if (!taskId) return res.status(400).json({ error: 'taskId no encontrado en el body' });
 
     const result = await resolveKieTask({ projectId, carouselId, taskId, slot });
-    res.json({ ok: true, taskId, ...result });
+    res.json({ ok: true, ...result });
   } catch (err) {
-    console.error('[carousel/callback] error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[carousel] operation failed');
+    res.status(500).json({ error: 'Error procesando carrusel' });
   }
 });
 
@@ -240,8 +319,8 @@ router.post('/:id/regenerate', async (req, res) => {
   if (!Array.isArray(slots) || slots.length === 0) return res.status(400).json({ error: 'slots (array de índices) es requerido' });
 
   try {
-    const carousel = await getCarousel(projectId, id);
-    if (!carousel) return res.status(404).json({ error: 'Carrusel no encontrado' });
+    const carousel = await requireOwned(req, res);
+    if (!carousel) return;
 
     if (what === 'compose') {
       await triggerComposition({ projectId, carouselId: id });
@@ -249,7 +328,7 @@ router.post('/:id/regenerate', async (req, res) => {
     }
 
     if (what === 'text') {
-      const { slides: regenerated } = await generateSlidesAndCaption({
+      const { slides: regenerated } = await generateSlides({
         script: carousel.script,
         scriptTemplate: carousel.scriptTemplate.snapshot,
         styleTemplate: carousel.styleTemplate.snapshot,
@@ -277,8 +356,8 @@ router.post('/:id/regenerate', async (req, res) => {
     const final = await getCarousel(projectId, id);
     res.json({ ok: true, what, carousel: toPublicCarousel(final) });
   } catch (err) {
-    console.error('[carousel] /regenerate error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[carousel] operation failed');
+    res.status(500).json({ error: 'Error procesando carrusel' });
   }
 });
 
@@ -289,8 +368,8 @@ router.post('/:id/recompose', async (req, res) => {
   if (!projectId) return res.status(400).json({ error: 'projectId es requerido' });
 
   try {
-    const carousel = await getCarousel(projectId, id);
-    if (!carousel) return res.status(404).json({ error: 'Carrusel no encontrado' });
+    const carousel = await requireOwned(req, res);
+    if (!carousel) return;
 
     if (styleTemplate?.visualBible) {
       await updateCarousel(projectId, id, {
@@ -301,23 +380,39 @@ router.post('/:id/recompose', async (req, res) => {
     await triggerComposition({ projectId, carouselId: id });
     res.json({ ok: true, triggered: true });
   } catch (err) {
-    console.error('[carousel] /recompose error:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error('[carousel] operation failed');
+    res.status(500).json({ error: 'Error procesando carrusel' });
   }
+});
+
+router.get('/', async (req, res) => {
+  try {
+    const docs = await listCarousels('ttchop2', req.userId);
+    res.json({ carousels: docs.filter(doc => owned(doc, req)).map(toPublicCarousel) });
+  } catch { res.status(500).json({ error: 'Error leyendo carruseles' }); }
+});
+
+router.delete('/:id', async (req, res) => {
+  try {
+    const carousel = await requireOwned(req, res);
+    if (!carousel) return;
+    await deleteCarousel('ttchop2', req.params.id);
+    res.json({ ok: true });
+  } catch { res.status(500).json({ error: 'Error borrando carrusel' }); }
 });
 
 router.get('/:id', async (req, res) => {
-  const { id } = req.params;
-  const { projectId } = req.query;
-  if (!projectId) return res.status(400).json({ error: 'projectId es requerido (query param)' });
 
   try {
-    const carousel = await getCarousel(projectId, id);
-    if (!carousel) return res.status(404).json({ error: 'Carrusel no encontrado' });
+    const carousel = await requireOwned(req, res);
+    if (!carousel) return;
     res.json({ carousel: toPublicCarousel(carousel) });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: 'Error procesando carrusel' });
   }
 });
 
-export default router;
+return router;
+}
+
+export default createCarouselRouter();

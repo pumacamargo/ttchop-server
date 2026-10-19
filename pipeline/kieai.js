@@ -156,14 +156,14 @@ export async function generateImage({ imageModel, prompt, n = 1, seed, callBackU
   });
 
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`kie.ai ${cfg.model} error ${res.status}: ${err.slice(0, 200)}`);
+    await res.text();
+    throw new Error(`kie.ai ${cfg.model} error ${res.status}`);
   }
 
   const data = await res.json();
-  console.log(`[kieai] ${cfg.model} createTask response:`, JSON.stringify(data));
+  console.log(`[kieai] ${cfg.model} createTask response:`, { code: data.code });
   if (data.code !== 200) {
-    throw new Error(`kie.ai ${cfg.model} error code ${data.code}: ${data.msg || JSON.stringify(data)}`);
+    throw new Error(`kie.ai ${cfg.model} error code ${data.code}`);
   }
   return data;
 }
@@ -174,8 +174,8 @@ export async function generateImage({ imageModel, prompt, n = 1, seed, callBackU
 export async function getTaskRecord(taskId) {
   const res = await fetch(`${BASE_URL}/jobs/recordInfo?taskId=${taskId}`, { headers: headers() });
   if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`kie.ai recordInfo error ${res.status}: ${err.slice(0, 200)}`);
+    await res.text();
+    throw new Error(`kie.ai recordInfo error ${res.status}`);
   }
   return res.json();
 }

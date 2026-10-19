@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { planCarouselAssetIngestion } from '../pipeline/carouselAssetIngestionPlan.js';
+const slide=(index,taskId,overrides={})=>({index,bg:{status:'done',taskId,url:`https://${taskId}-${index}.jpg`,storagePath:`assets/${taskId}-${index}.jpg`,...overrides}});
+const carousel=(slides,overrides={})=>({id:'carousel-1',projectId:'ttchop2',userId:'user-1',imageModel:'model-x',slides,imageTaskPrompts:Object.fromEntries([...new Set(slides.map(s=>s.bg?.taskId).filter(Boolean))].map(taskId=>[taskId,{prompt:`full prompt for ${taskId}`,imagePrompts:slides.filter(s=>s.bg?.taskId===taskId).map(s=>({index:s.index,imagePrompt:`slide ${s.index}`}))}])),...overrides});
+test('plans all batch backgrounds in source index order with attribution',()=>{const c=carousel([slide(8,'batch'),slide(2,'batch')],{accountId:'acct-1'});const result=planCarouselAssetIngestion(c,'batch');assert.deepEqual(result.map(x=>x.sourceSlideIndex),[2,8]);assert.ok(result.every(x=>x.sourceTaskId==='batch'&&x.accountId==='acct-1'&&x.prompt==='full prompt for batch'));});
+test('excludes other task and handles general/account scope',()=>{const c=carousel([slide(0,'requested'),slide(1,'other')]);assert.deepEqual(planCarouselAssetIngestion(c,'requested').map(x=>x.sourceTaskId),['requested']);assert.equal(planCarouselAssetIngestion({...c,accountId:'acct-2'},'requested')[0].accountId,'acct-2');});
+test('returns empty when task has no match',()=>assert.deepEqual(planCarouselAssetIngestion(carousel([slide(1,'elsewhere')]),'missing'),[]));
+test('fails explicitly for matching incomplete background',()=>assert.throws(()=>planCarouselAssetIngestion(carousel([slide(1,'requested',{storagePath:''})]),'requested'),/Completed carousel background/));
+test('deduplicates identical references, not distinct slides in a generation',()=>{const first=slide(3,'batch');const duplicate=structuredClone(first);const c=carousel([first,duplicate,slide(4,'batch')]);assert.deepEqual(planCarouselAssetIngestion(c,'batch').map(x=>x.sourceSlideIndex),[3,4]);});
