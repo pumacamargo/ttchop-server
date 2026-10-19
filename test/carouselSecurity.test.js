@@ -9,6 +9,7 @@ async function fixture(t, overrides = {}) {
   const docs = new Map([['car1', { ...base }]]);
   const dependencies = {
     configuredProjects: () => ['ttchop2'],
+    verifyIdToken: async token => { if (token === 'valid-alice') return { uid: 'alice' }; if (token === 'valid-bob') return { uid: 'bob' }; throw Error('invalid'); },
     getCarousel: async (p, id) => { calls.push(['get', p, id]); return docs.get(id); },
     listCarousels: async (p, uid) => { calls.push(['list', p, uid]); return [...docs.values()]; },
     getTemplateById: async (p, id) => { calls.push(['template', p, id]); return { id, userId: id === 'foreign' ? 'bob' : 'alice', accountId: id === 'accountOnly' ? 'shop' : null, type: id.startsWith('style') ? 'carousel_style' : 'carousel_script', content: 'content', visualBible: 'visual' }; },
@@ -23,11 +24,11 @@ async function fixture(t, overrides = {}) {
   };
   const app = express(); app.use(express.json()); app.use('/carousel', createCarouselRouter({ ...dependencies, ...overrides }));
   const server = app.listen(0); t.after(() => server.close());
-  const request = async (method, path, userId = 'alice', body = {}) => {
+  const request = async (method, path, userId = 'alice', body = {}, bearer = userId ? `valid-${userId}` : null) => {
     const url = new URL(`http://127.0.0.1:${server.address().port}/carousel${path}`);
     if (method === 'GET' && userId) url.searchParams.set('userId', userId);
     const response = await fetch(url, {
-      method, signal: AbortSignal.timeout(2000), headers: { 'Content-Type': 'application/json' },
+      method, signal: AbortSignal.timeout(2000), headers: { 'Content-Type': 'application/json', ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
       ...(method === 'GET' ? {} : { body: JSON.stringify(path.startsWith('/callback') ? body : { ...(userId ? { userId } : {}), ...body }) }),
     });
     return { status: response.status, body: await response.json() };
@@ -35,36 +36,30 @@ async function fixture(t, overrides = {}) {
   return { request, calls, docs };
 }
 const create = { projectId: 'ttchop2', userId: 'alice', script: 'hello', language: 'es', scriptTemplateId: 'script1', styleTemplateId: 'style1', dryRun: true };
-test('GET identifies caller from query without Firebase Bearer', async t => {
-  const { docs } = await fixture(t);
-  const app = express();
-  app.use('/carousel', createCarouselRouter({ configuredProjects: () => ['ttchop2'], getCarousel: async (p, id) => docs.get(id) }));
-  const server = app.listen(0); t.after(() => server.close());
-  const response = await fetch(`http://127.0.0.1:${server.address().port}/carousel/car1?projectId=ttchop2&userId=alice`);
-  assert.equal(response.status, 200);
-  assert.equal((await response.json()).carousel.userId, 'alice');
-});
-test('create uses body userId and rejects foreign template/account before writes', async t => {
+test('missing and invalid Bearer never access datastore, even with forged userId', async t => {
   const { request, calls } = await fixture(t);
+  assert.equal((await request('GET', '/car1?projectId=ttchop2&userId=alice', '', {}, null)).status, 401);
+  assert.equal((await request('POST', '/create', '', { ...create, userId: 'alice' }, 'invalid')).status, 401);
+  assert.deepEqual(calls, []);
+});
+test('verified token UID controls owner reads and ignores forged query/body userId', async t => {
+  const { request, calls } = await fixture(t);
+  assert.equal((await request('GET', '/car1?projectId=ttchop2&userId=alice', 'bob')).status, 404);
+  assert.equal((await request('GET', '/car1?projectId=ttchop2&userId=bob', 'alice')).status, 200);
+  assert.equal((await request('POST', '/car1/recompose', 'bob', { projectId: 'ttchop2', userId: 'alice' })).status, 404);
+  assert.ok(!calls.some(c => c[0] === 'compose'));
+});
+test('create uses verified UID and rejects foreign template/account before writes', async t => {
+  const { request, calls, docs } = await fixture(t);
   assert.equal((await request('POST', '/create', 'alice', { ...create, scriptTemplateId: 'foreign' })).status, 404);
   assert.equal((await request('POST', '/create', 'alice', { ...create, accountId: 'bob_shop' })).status, 403);
   assert.equal((await request('POST', '/create', 'alice', { ...create, accountId: 'shop' })).status, 200);
-  const ok = await request('POST', '/create', 'alice', create);
+  const ok = await request('POST', '/create?userId=bob', 'alice', { ...create, userId: 'bob' });
   assert.equal(ok.status, 200);
-  assert.equal(ok.body.carousel.userId, 'alice');
+  assert.equal(docs.get(ok.body.carouselId).userId, 'alice');
   assert.equal(ok.body.carousel.callbackToken, undefined);
   assert.ok(calls.some(c => c[0] === 'create'));
 });
-test('POST uses body userId even if query suggests another user', async t => {
-  const { request, docs } = await fixture(t);
-  const response = await request('POST', '/create?userId=alice', 'alice', {
-    projectId: 'ttchop2', userId: 'bob', script: 'hello', language: 'es', dryRun: true,
-    scriptTemplate: { content: 'structure' }, styleTemplate: { visualBible: 'visual' },
-  });
-  assert.equal(response.status, 200);
-  assert.equal(docs.get(response.body.carouselId).userId, 'bob');
-});
-
 test('account-specific templates cannot be selected from the general container', async t => {
   const { request } = await fixture(t);
   assert.equal((await request('POST', '/create', 'alice', { ...create, scriptTemplateId: 'accountOnly' })).status, 404);
@@ -76,15 +71,15 @@ test('account lookup failure is a controlled error', async t => {
   assert.equal((await request('POST', '/create', 'alice', { ...create, accountId: 'shop' })).status, 500);
 });
 
-test('client routes reject missing userId and wrong project without datastore lookup', async t => {
+test('client routes reject missing token and wrong project without datastore lookup', async t => {
   const { request, calls } = await fixture(t);
   for (const [method, path, body] of [['GET','/car1?projectId=ttchop', null], ['POST','/create', { ...create, projectId: 'ttchop' }], ['POST','/car1/approve-text',{projectId:'ttchop'}], ['POST','/car1/regenerate',{projectId:'ttchop',slots:[0]}], ['POST','/car1/recompose',{projectId:'ttchop'}], ['DELETE','/car1',{projectId:'ttchop'}]]) {
     assert.equal((await request(method, path, 'alice', body)).status, 400);
   }
   assert.deepEqual(calls, []);
-  assert.equal((await request('GET', '/car1?projectId=ttchop2', '')).status, 400);
-  assert.equal((await request('POST', '/create', '', { ...create, userId: '' })).status, 400);
-  assert.equal((await request('POST', '/create', '', { ...create, userId: ['alice'] })).status, 400);
+  assert.equal((await request('GET', '/car1?projectId=ttchop2', '', {}, null)).status, 401);
+  assert.equal((await request('POST', '/create', '', { ...create, userId: '' }, null)).status, 401);
+  assert.equal((await request('POST', '/create', '', { ...create, userId: ['alice'] }, null)).status, 401);
   assert.deepEqual(calls, []);
 });
 test('unconfigured ttchop2 stops requests before datastore access', async t => {

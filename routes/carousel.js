@@ -1,5 +1,6 @@
 import { Router } from 'express';
-import { getConfiguredProjects, getDb } from '../pipeline/firebase.js';
+import { getConfiguredProjects, getDb, getCarouselAuthApp } from '../pipeline/firebase.js';
+import { getAuth } from 'firebase-admin/auth';
 import { callLLMJson as defaultCallLLMJson } from '../pipeline/llm.js';
 import { IMAGE_MODEL_IDS } from '../pipeline/kieai.js';
 import { matchCarouselBackgrounds } from '../pipeline/carouselReuse.js';
@@ -8,11 +9,10 @@ import {
 } from '../pipeline/carouselStore.js';
 import { submitImageBatches as defaultSubmitImageBatches, resolveKieTask as defaultResolveKieTask, triggerComposition as defaultTriggerComposition } from '../pipeline/carouselImages.js';
 
-// TODO: Temporary public carousel API: userId is caller-supplied, not authenticated.
-// Add an internal access key before hardening; arbitrary callers can spend credits meanwhile.
 export function createCarouselRouter(deps = {}) {
 const router = Router();
 const {
+  verifyIdToken = async token => getAuth(getCarouselAuthApp()).verifyIdToken(token),
   getCarousel = defaultGetCarousel, createCarousel = defaultCreateCarousel,
   updateCarousel = defaultUpdateCarousel, getTemplateById = defaultGetTemplateById,
   submitImageBatches = defaultSubmitImageBatches, resolveKieTask = defaultResolveKieTask,
@@ -45,8 +45,14 @@ async function requireOwned(req, res) {
 }
 router.use(async (req, res, next) => {
   if (req.path === '/callback' && req.method === 'POST') return next();
-  req.userId = req.method === 'GET' ? req.query.userId : req.body?.userId;
-  if (typeof req.userId !== 'string' || !req.userId.trim()) return res.status(400).json({ error: 'userId es requerido' });
+  const authorization = req.get('authorization') || '';
+  const match = authorization.match(/^Bearer (.+)$/i);
+  if (!match) return res.status(401).json({ error: 'Autenticación requerida' });
+  try {
+    const decoded = await verifyIdToken(match[1]);
+    if (typeof decoded?.uid !== 'string' || !decoded.uid) return res.status(401).json({ error: 'Token inválido' });
+    req.userId = decoded.uid;
+  } catch { return res.status(401).json({ error: 'Token inválido' }); }
   if (project(req) !== 'ttchop2') return res.status(400).json({ error: 'projectId debe ser ttchop2' });
   if (!configuredProjects().includes('ttchop2')) return res.status(503).json({ error: 'ttchop2 no configurado' });
   next();

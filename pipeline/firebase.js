@@ -116,6 +116,6 @@ export { getAdminApp };
 export function getCarouselAuthApp() {
   if (!getConfiguredProjects().includes('ttchop2')) throw new Error('ttchop2 not configured');
   const app = getApp('ttchop2');
-  if (app.name !== 'ttchop2' || app.options.projectId !== 'ttchop2') throw new Error('ttchop2 app mismatch');
+  if (app.name !== 'ttchop2' || app.options.projectId !== 'ttchop2' || app.options.credential?.projectId !== 'ttchop2') throw new Error('ttchop2 app mismatch');
   return app;
 }
