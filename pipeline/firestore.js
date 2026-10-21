@@ -1,6 +1,11 @@
 import { getDb } from './firebase.js';
 
-export async function upsertRender({
+export async function upsertRender(args) {
+  return writeRender(getDb(args.projectId), args);
+}
+
+// Separate the Firestore writer from credential selection for offline regression tests.
+export async function writeRender(db, {
   taskId,
   status,
   videoUrl = null,
@@ -23,7 +28,6 @@ export async function upsertRender({
   // etapa se pueda actualizar sin borrar lo que ya guardaron las otras.
   inputs = null,
 }) {
-  const db = getDb(projectId);
   const ref = db.collection('renders').doc(taskId);
 
   const now = new Date().toISOString();
@@ -60,7 +64,15 @@ export async function upsertRender({
       // Firestore update() rechaza `undefined` como valor (incluso anidado) —
       // el round-trip por JSON lo elimina de los objetos (JSON.stringify omite
       // keys con valor undefined), dejando null/valores reales intactos.
-      if (inputs[stage]) inputUpdates[`inputs.${stage}`] = JSON.parse(JSON.stringify(inputs[stage]));
+      if (!inputs[stage]) continue;
+      if (stage === 'collage') {
+        // A full map replacement erases editManifest on later stage writes.
+        for (const [key, value] of Object.entries(inputs.collage)) {
+          if (value !== undefined) inputUpdates[`inputs.collage.${key}`] = JSON.parse(JSON.stringify(value));
+        }
+      } else {
+        inputUpdates[`inputs.${stage}`] = JSON.parse(JSON.stringify(inputs[stage]));
+      }
     }
     if (Object.keys(inputUpdates).length > 0) {
       await ref.update(inputUpdates);

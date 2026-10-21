@@ -129,8 +129,61 @@ ElevenLabs TTS → audio.mp3
 → LLM (Claude Haiku) → ffmpeg recipe JSON
 → collage_builder.py → collage.mp4
 → FTP upload → URL pública
-→ Firestore renders/{renderId} { status, videoUrl }
+→ Firestore renders/{renderId} { status, videoUrl, inputs.collage.editManifest }
 ```
+
+
+#### Manifiesto de edición del collage
+
+`POST /collage/create` guarda `renders/{renderId}.inputs.collage.editManifest` (versión 1)
+**después** de corregir roles, velocidades, trims/URLs y agregar los clips de
+relleno, **antes** de invocar FFmpeg. También queda disponible con `status: failed`
+si falla el builder después de fijar la receta. Los cambios posteriores de estado,
+URL y otras etapas no lo borran. No contiene URLs, tokens, rutas locales ni secretos.
+
+Ejemplo abreviado (segundos):
+
+```json
+{
+  "version": 1,
+  "timingBasis": "planned; builder setpts factor rounded to 6 decimals, concat order, audio -shortest; MP4 frame/codec durations may differ",
+  "audioDurationSeconds": 4,
+  "plannedVideoDurationSeconds": 4.0000015,
+  "plannedTimelineDurationSeconds": 4,
+  "segments": [
+    {"index": 0, "recipeIndex": 0, "sessionId": "sess_1", "sourceClipId": "vid_1", "role": "hook", "repeated": false, "sourceStartSeconds": 1, "sourceEndSeconds": 3, "speed": 2, "timelineStartSeconds": 0, "timelineEndSeconds": 1, "outputDurationSeconds": 1},
+    {"index": 1, "recipeIndex": 1, "sessionId": "sess_1", "sourceClipId": "vid_2", "role": "body", "repeated": true, "sourceStartSeconds": 0, "sourceEndSeconds": 4.5, "speed": 1.5, "timelineStartSeconds": 1, "timelineEndSeconds": 4, "outputDurationSeconds": 3}
+  ],
+  "actualMp4DurationSeconds": 4.02,
+  "measuredVideoSegments": [
+    {"recipeIndex": 0, "sessionId": "sess_1", "sourceClipId": "vid_1", "timelineStartSeconds": 0, "timelineEndSeconds": 1.02, "outputDurationSeconds": 1.02},
+    {"recipeIndex": 1, "sessionId": "sess_1", "sourceClipId": "vid_2", "timelineStartSeconds": 1.02, "timelineEndSeconds": 4.02, "outputDurationSeconds": 3}
+  ]
+}
+```
+
+Los segmentos están en orden de `concat` del builder; `recipeIndex` indica la
+posición de la receta final (el builder omite trims no positivos). Segmentos
+posteriores al corte previsto por `-shortest` tienen duración cero, pero se
+conservan porque el vídeo real podría adelantar el corte al transcodificar; `repeated`
+identifica rellenos `_extN` sin perder el ID original. `sourceStartSeconds` y
+`sourceEndSeconds` delimitan el intervalo visible estimado en el clip fuente,
+incluso si `-shortest` corta el último segmento. `timeline*` y `outputDurationSeconds`
+son tiempos **previstos**: el builder aplica `setpts` con factor `1/speed`
+redondeado a seis decimales, concatena en orden y trunca al audio con `-shortest`.
+`plannedVideoDurationSeconds` es la suma antes de ese truncamiento;
+`plannedTimelineDurationSeconds` es el mínimo entre vídeo y audio. La duración
+**medida** por ffprobe del MP4, si el builder terminó, se registra aparte en
+`actualMp4DurationSeconds`; diferencias por frames, codec o mux no convierten
+los offsets previstos en mediciones precisas de cortes del MP4. Cuando el
+builder termina, `measuredVideoSegments` suma las duraciones individuales
+medidas por ffprobe después de transcodificar cada clip y limita el resultado
+con la duración final del MP4; son offsets inferidos a partir de duraciones
+de media, no una lista de cortes por frame extraída del contenedor final.
+Los renders
+históricos no reciben backfill automáticamente.
+
+Pruebas offline (sin Firebase real): `npm test`.
 
 ---
 

@@ -10,6 +10,7 @@ import { callLLM, callLLMJson } from '../pipeline/llm.js';
 import { textToSpeech, textToSpeechWithTimestamps } from '../pipeline/elevenlabs.js';
 import { uploadToStorage } from '../pipeline/storage.js';
 import { upsertRender } from '../pipeline/firestore.js';
+import { createCollageEditManifest, attachCollageMeasurements } from '../pipeline/collageEditManifest.js';
 import { enqueue } from '../pipeline/jobQueue.js';
 import fetch from 'node-fetch';
 
@@ -379,6 +380,8 @@ OUTPUT FORMAT:
       console.log(`[${jobId}] CLIP ${String(i+1).padStart(2,'0')} | ${c.role || '??'} | ${c.clipId} | start=${c.trimStart?.toFixed(2)} end=${c.trimEnd?.toFixed(2)} speed=${c.speed} → out=${out.toFixed(2)}s`);
     });
 
+    const originalClipCount = clips.length;
+
     // 4b. Fill gap if clips sum < audio duration — cycle random body clips, no consecutive repeats
     let totalOut = clips.reduce((s, c) => s + clipOutSecs(c), 0);
     const gap = audioDurationSeconds - totalOut;
@@ -413,6 +416,12 @@ OUTPUT FORMAT:
 
     console.log(`[${jobId}] Recipe: ${clips.length} clips, total=${totalOut.toFixed(1)}s, audio=${audioDurationSeconds}s`);
 
+    // Persist the sanitized final edit plan BEFORE invoking FFmpeg. If the
+    // builder fails, failed status updates must leave this manifest intact.
+    const editManifest = createCollageEditManifest(clips, sessions, audioDurationSeconds, originalClipCount);
+    await upsertRender({ taskId: renderId, status: 'processing', projectId,
+      inputs: { collage: { editManifest } } });
+
     // 4c. Write recipe JSON
     writeFileSync(recipePath, JSON.stringify(recipe));
 
@@ -426,6 +435,10 @@ OUTPUT FORMAT:
     if (pyOutput.error) throw new Error(`collage_builder: ${pyOutput.error}`);
 
     console.log(`[${jobId}] Collage built: ${pyOutput.final_duration_seconds}s`);
+    // Builder ffprobe measurement is distinct from the planned edit timeline.
+    const measuredManifest = attachCollageMeasurements(editManifest, pyOutput.trimmed_segments, pyOutput.final_duration_seconds);
+    await upsertRender({ taskId: renderId, status: 'processing', projectId,
+      inputs: { collage: { editManifest: measuredManifest } } });
 
     // 6. Upload to Firebase Storage
     console.log(`[${jobId}] Uploading to Firebase Storage...`);
@@ -441,7 +454,7 @@ OUTPUT FORMAT:
     // directo compondría el personaje sobre un video que YA tiene un personaje pegado
     // encima en vez de sobre el collage original. Guardar la URL del collage aparte
     // evita esa cascada.
-    const collageInputs = { voiceId, dialogue, sessions, product, collageTemplate, language, mascotSegments, needsOverlay, needsCharacter, videoUrl: publicUrl };
+    const collageInputs = { voiceId, dialogue, sessions, product, collageTemplate, language, mascotSegments, needsOverlay, needsCharacter, videoUrl: publicUrl, editManifest: measuredManifest };
     if (needsOverlay) {
       // Collage done — mark as collage_done, overlay will update to done
       await upsertRender({

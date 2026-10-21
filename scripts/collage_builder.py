@@ -106,6 +106,7 @@ def main():
 
     # --- Download and trim each clip ---
     trimmed_clips = []
+    trimmed_segments = []
     download_cache = {}  # firebaseUrl -> local raw_path (avoids re-downloading filler clips)
 
     for i, clip in enumerate(clips):
@@ -157,6 +158,7 @@ def main():
         actual_duration = get_media_duration(trimmed_path)
         logger.info(f"Clip {i} ({role}): trimmed {trim_start:.3f}s-{trim_end:.3f}s -> {actual_duration:.3f}s")
         trimmed_clips.append(trimmed_path)
+        trimmed_segments.append({"recipeIndex": i, "measuredDurationSeconds": actual_duration})
 
     if not trimmed_clips:
         raise RuntimeError("No clips were trimmed — nothing to render")
@@ -193,7 +195,8 @@ def main():
         "status": "success",
         "output_path": output_path,
         "total_clips": len(trimmed_clips),
-        "final_duration_seconds": round(final_duration, 2),
+        "trimmed_segments": trimmed_segments,
+        "final_duration_seconds": final_duration,
         "log_file": LOG_FILE,
     }))
 
