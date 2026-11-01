@@ -8,8 +8,8 @@ clips y mover archivos hacia/desde el NAS.
 Estos scripts eran antes one-offs sueltos en un directorio efímero; aquí viven
 versionados y **sin rutas del caso hardcodeadas** (todo entra por CLI).
 
-Runbook de referencia (Cacho):
-[`operations/recrear-video-creadores-edits.md`](../../operations/recrear-video-creadores-edits.md).
+Runbook de referencia (repo Cacho, `/root/cacho`):
+`operations/recrear-video-creadores-edits.md`.
 
 ## Dónde corre cada cosa
 
@@ -20,8 +20,9 @@ Runbook de referencia (Cacho):
 | `extract_clip_frames.sh` | **vps-projects** | `ffmpeg`/`ffprobe` sobre los clips del mount. |
 | `nas/put.py`, `nas/get.py`, `nas/list_dir.py` | **vps-tools** | Ahí vive la credencial pumassh (`/root/.config/pumassh/polaris.json`). |
 
-> Los helpers SMB usan la librería Python `smbclient` (no el mount CIFS):
-> `pip install smbclient` en el host donde corran.
+> Los helpers SMB usan la librería Python `smbclient` (no el mount CIFS). En **vps-tools**
+> ya hay un venv listo con ella: `/root/.venvs/nas-smb/bin/python` (si falta en otro host,
+> `pip install smbclient`).
 
 ## 1. `build_recipe_from_plan.py`
 
