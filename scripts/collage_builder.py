@@ -141,7 +141,7 @@ def main():
         # Trim (and optionally speed up)
         trimmed_path = os.path.join(temp_dir, f"trim_{i}_{clip_id}.mp4")
 
-        scale_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},setpts=PTS-STARTPTS"
+        scale_filter = f"scale={width}:{height}:force_original_aspect_ratio=increase:flags=lanczos,crop={width}:{height},setpts=PTS-STARTPTS"
 
         if speed != 1:
             pts_factor = round(1 / speed, 6)
