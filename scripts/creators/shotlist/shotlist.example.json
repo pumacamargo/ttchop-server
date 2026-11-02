@@ -1,0 +1,214 @@
+{
+  "_doc": [
+    "Datos reales del caso 02_blanket (25 tomas, 6 grupos) tal como quedaron en la",
+    "version aprobada. Sirve de plantilla: copialo junto a los shots como shotlist.json",
+    "y pasalo a build_shotlist_html.py.",
+    "",
+    "by_frame va SIEMPRE por indice de frame del ORIGINAL (fNN de intervals.json),",
+    "NUNCA por el numero ya fusionado: el corte falso de 0.03 s de este caso (frame 10)",
+    "renumera los shots y correria las descripciones una toma (nos paso: 'celular'",
+    "donde habia un libro). Por eso el frame 10 (corte falso) NO aparece aqui.",
+    "",
+    "enc = encuadre (se pinta). ang = angulo (opcional, se conserva pero no se pinta).",
+    "act = una linea de accion, lo que hay que grabar.",
+    "groups[].frames = indices de frame del original, agrupados por tipo de toma para",
+    "poder grabar de corrido."
+  ],
+  "case": "02_blanket",
+  "by_frame": {
+    "1": {
+      "enc": "Primer plano",
+      "ang": "Cenital",
+      "act": "El peluche en el sillón"
+    },
+    "2": {
+      "enc": "Plano general",
+      "ang": "Cenital",
+      "act": "Cobija extendida sobre el sillón"
+    },
+    "3": {
+      "enc": "Plano general",
+      "ang": "Lateral",
+      "act": "Persona acostada tapada en la cama"
+    },
+    "4": {
+      "enc": "Plano medio",
+      "ang": "Frontal",
+      "act": "Persona de pie envuelta tipo capucha"
+    },
+    "5": {
+      "enc": "Detalle",
+      "ang": "Frontal",
+      "act": "Manos sosteniendo el peluche"
+    },
+    "6": {
+      "enc": "Detalle",
+      "ang": "Frontal",
+      "act": "Peluche en vertical (entra la flecha)"
+    },
+    "7": {
+      "enc": "Detalle",
+      "ang": "Frontal",
+      "act": "Manos acariciando el peluche"
+    },
+    "8": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "LIBRO encima de la cobija"
+    },
+    "9": {
+      "enc": "Plano medio",
+      "ang": "Cenital",
+      "act": "LIBRO encima, vista más abierta"
+    },
+    "11": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "Otra cobija: pelo largo gris (comparar)"
+    },
+    "12": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "Otra cobija: pelo largo beige (comparar)"
+    },
+    "13": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "Otra cobija: labrada blanca (comparar)"
+    },
+    "14": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "Otra cobija: labrada rosa (comparar)"
+    },
+    "15": {
+      "enc": "Plano medio",
+      "ang": "Frontal",
+      "act": "LA TUYA: sobre el sillón"
+    },
+    "16": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "Manos presionando el peluche (grosor)"
+    },
+    "17": {
+      "enc": "Plano medio",
+      "ang": "Frontal",
+      "act": "Persona sentada con la tablet tapada (piernas)"
+    },
+    "18": {
+      "enc": "Plano general",
+      "ang": "Lateral",
+      "act": "Persona acostada en el sillón tapada"
+    },
+    "19": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "Palma abierta sobre el pelo (no suelta)"
+    },
+    "20": {
+      "enc": "Plano medio",
+      "ang": "Frontal",
+      "act": "Levantar y mostrar la cobija (lavable)"
+    },
+    "21": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "La textura labrada en primer plano"
+    },
+    "22": {
+      "enc": "Detalle",
+      "ang": "Frontal",
+      "act": "Mano presionando el peluche"
+    },
+    "23": {
+      "enc": "Detalle",
+      "ang": "Cenital",
+      "act": "LIBRO encima de la cobija (otra vez)"
+    },
+    "24": {
+      "enc": "Detalle",
+      "ang": "Frontal",
+      "act": "Mano sobre el peluche (flecha roja)"
+    },
+    "25": {
+      "enc": "Plano medio",
+      "ang": "Lateral",
+      "act": "Persona tapada en el sillón (flecha)"
+    },
+    "26": {
+      "enc": "Plano medio",
+      "ang": "Frontal",
+      "act": "La cobija en primer plano (cierre)"
+    }
+  },
+  "groups": [
+    {
+      "id": "A",
+      "name": "La cobija",
+      "hint": "presentación, sin manos",
+      "frames": [
+        1,
+        2,
+        15
+      ]
+    },
+    {
+      "id": "B",
+      "name": "Persona con la cobija",
+      "hint": "puesta, acostada, envuelta o mostrándola",
+      "frames": [
+        3,
+        4,
+        17,
+        18,
+        20,
+        25,
+        26
+      ]
+    },
+    {
+      "id": "C",
+      "name": "Detalle del pelo",
+      "hint": "manos sobre el peluche",
+      "frames": [
+        5,
+        7,
+        19,
+        22,
+        24
+      ]
+    },
+    {
+      "id": "D",
+      "name": "Grosor y textura",
+      "hint": "primeros planos cerrados",
+      "frames": [
+        6,
+        16,
+        21
+      ]
+    },
+    {
+      "id": "E",
+      "name": "LIBRO encima",
+      "hint": "el libro hundido en la cobija",
+      "frames": [
+        8,
+        9,
+        23
+      ]
+    },
+    {
+      "id": "F",
+      "name": "Comparar con otras",
+      "hint": "otras cobijas para contraste",
+      "frames": [
+        11,
+        12,
+        13,
+        14
+      ]
+    }
+  ]
+}

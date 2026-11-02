@@ -19,6 +19,8 @@ Runbook de referencia (repo Cacho, `/root/cacho`):
 | `measure_caption_style.py` | **vps-projects** | Lee los fotogramas/clips del mount (`ffmpeg` para el path de video). |
 | `extract_clip_frames.sh` | **vps-projects** | `ffmpeg`/`ffprobe` sobre los clips del mount. |
 | `nas/put.py`, `nas/get.py`, `nas/list_dir.py` | **vps-tools** | Ahí vive la credencial pumassh (`/root/.config/pumassh/polaris.json`). |
+| `shotlist/analyze_ref_shots.py`, `shotlist/transcribe_creator_ref.py` | **PC PumaDeskAsus** | ffmpeg de escritorio y ASR con CUDA sobre el video original. |
+| `shotlist/make_shot_gifs.py`, `shotlist/build_shotlist_html.py`, `shotlist/publish_ftp.py` | **vps-tools** | ffmpeg, PIL y la credencial FTPS viven ahí. |
 
 > Los helpers SMB usan la librería Python `smbclient` (no el mount CIFS). En **vps-tools**
 > ya hay un venv listo con ella: `/root/.venvs/nas-smb/bin/python` (si falta en otro host,
@@ -95,3 +97,26 @@ python3 nas/put.py <remote_dir> <local_file>... [--force]
 **Seguridad (igual que los originales):** la credencial se abre con `O_NOFOLLOW` y se
 valida (`S_ISREG`, `uid == getuid`, `mode & 0o077 == 0`); **nunca** se imprimen las
 credenciales.
+
+## 6. `shotlist/` — lista de shots a grabar (HTML con GIF animado)
+
+Convierte el video de referencia de un creador en una **lista HTML de shots a grabar**,
+con cada shot como **GIF animado de 6 fps**, su duración, encuadre y una línea de acción,
+agrupado por tipo de toma. Es el paso previo al montaje: primero se graba lo que dice la
+lista, después se arma la receta con `build_recipe_from_plan.py`.
+
+```
+transcribe_creator_ref.py <caso> [archivo.mp4]                        # PC  (ASR)
+analyze_ref_shots.py <video> <dir_salida> [umbral=0.27]               # PC  (cortes + frames)
+make_shot_gifs.py <video> <dir_shots> <dir_gifs> [ancho] [fps] ...    # vps-tools
+build_shotlist_html.py <dir_shots> <salida.html> [caso] [json] [pref] # vps-tools
+publish_ftp.py {list|put|putmany} ...                                 # vps-tools
+```
+
+Los datos del caso (25 descripciones + grupos en el caso piloto `02_blanket`) entran por
+un `shotlist.json` junto a los shots — plantilla en `shotlist/shotlist.example.json`.
+
+Ver **`shotlist/README.md`** para el flujo completo, los comandos y los pitfalls
+(frames al punto medio del shot, descripciones indexadas por frame del original y no por
+el número fusionado, agrupar por tipo de toma, GIFs como archivos aparte con respaldo
+embebido, hoja de contacto con PIL en vez de `ffmpeg -pattern_type glob`).
