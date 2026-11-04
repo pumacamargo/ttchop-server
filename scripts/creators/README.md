@@ -18,6 +18,7 @@ Runbook de referencia (repo Cacho, `/root/cacho`):
 | `build_recipe_from_plan.py` | **vps-projects** | Necesita el mount `/mnt/polaris` y `ffprobe`. |
 | `measure_caption_style.py` | **vps-projects** | Lee los fotogramas/clips del mount (`ffmpeg` para el path de video). |
 | `extract_clip_frames.sh` | **vps-projects** | `ffmpeg`/`ffprobe` sobre los clips del mount. |
+| `tts/tts_lines.mjs` | **vps-projects** | Usa el `node_modules` del repo (`node-fetch`) y la API key de `ttchop-server/.env`. |
 | `nas/put.py`, `nas/get.py`, `nas/list_dir.py` | **vps-tools** | Ahí vive la credencial pumassh (`/root/.config/pumassh/polaris.json`). |
 | `shotlist/analyze_ref_shots.py`, `shotlist/transcribe_creator_ref.py` | **PC PumaDeskAsus** | ffmpeg de escritorio y ASR con CUDA sobre el video original. |
 | `shotlist/make_shot_gifs.py`, `shotlist/build_shotlist_html.py`, `shotlist/publish_ftp.py` | **vps-tools** | ffmpeg, PIL y la credencial FTPS viven ahí. |
@@ -98,7 +99,19 @@ python3 nas/put.py <remote_dir> <local_file>... [--force]
 valida (`S_ISREG`, `uid == getuid`, `mode & 0o077 == 0`); **nunca** se imprimen las
 credenciales.
 
-## 6. `shotlist/` — lista de shots a grabar (HTML con GIF animado)
+## 6. `tts/` — voz de las líneas con el TTS del server
+
+Genera la voz del guion de un caso con el TTS del propio `ttchop-server`
+(ElevenLabs, voz **PumaVoice01**), una toma por línea. Corre en **vps-projects**
+(necesita el `node_modules` del repo y la API key de `.env`).
+
+```
+node tts_lines.mjs <lines.json> <dir_salida> [voiceId]
+```
+
+Ver **`tts/README.md`**. Los `.mp3` salen a un directorio de trabajo: **no se commitea media**.
+
+## 7. `shotlist/` — lista de shots a grabar (HTML con GIF animado)
 
 Convierte el video de referencia de un creador en una **lista HTML de shots a grabar**,
 con cada shot como **GIF animado de 6 fps**, su duración, encuadre y una línea de acción,
